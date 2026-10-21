@@ -62,12 +62,20 @@
     background:var(--card); border:1px solid var(--line); border-bottom:none;
     border-radius:18px 18px 0 0; box-shadow:0 -8px 30px rgba(20,25,10,.16);
     display:flex; flex-direction:column;
-    max-height:46vh;
+    max-height:38vh;
     padding-bottom:env(safe-area-inset-bottom,0px);
   }
+  #chatToggle{
+    position:absolute; top:-14px; left:50%; transform:translateX(-50%);
+    width:44px; height:28px; border-radius:999px; padding:0;
+    background:var(--card); border:1px solid var(--line);
+    box-shadow:0 -4px 14px rgba(20,25,10,.14); font-size:13px; line-height:1;
+  }
+  #chat.mini #msgs, #chat.mini #inputRow, #chat.mini #btnRow{display:none!important}
+  #chat.mini{min-height:30px}
   #msgs{
     overflow-y:auto; padding:14px 14px 4px; display:flex; flex-direction:column; gap:8px;
-    scroll-behavior:smooth;
+    scroll-behavior:smooth; max-height:132px;
   }
   .msg{max-width:85%; padding:8px 12px; border-radius:14px; font-size:14px}
   .msg.bot{background:var(--bot); border-bottom-left-radius:4px; align-self:flex-start}
@@ -174,6 +182,7 @@
 </header>
 
 <div id="chat">
+  <button id="chatToggle" aria-label="Riduci o apri la chat">▾</button>
   <div id="msgs" aria-live="polite"></div>
   <div id="inputRow" hidden>
     <input type="text" id="textInput" autocomplete="off">
@@ -527,8 +536,10 @@ function hangMemory(mem, texture, anchorIndex){
   disc.position.z = 0.002;
   med.add(ring, disc);
   g.add(med);
-  g.userData.med = med;
-  g.userData.mem = mem;
+  // riferimenti come proprietà dirette, NON in userData: Object3D.clone serializza
+  // userData in JSON e i riferimenti circolari mandano in stack overflow l'export USDZ
+  g.med = med;
+  g.memRef = mem;
   g.scale.setScalar(0.001);
   ornGroup.add(g);
   mem.mesh = g; mem.disc = disc;
@@ -604,7 +615,8 @@ renderer.setAnimationLoop((t, frame) => {
   }
   camera.getWorldQuaternion(camQ);
   for (const g of ornGroup.children){
-    const med = g.userData.med;
+    const med = g.med;
+    if (!med) continue;
     med.parent.getWorldQuaternion(parQ);
     med.quaternion.copy(parQ.invert()).multiply(camQ);
   }
@@ -627,8 +639,8 @@ renderer.setAnimationLoop((t, frame) => {
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth/innerHeight;
-  camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  updateFraming();
 });
 
 // ---------- tap ----------
@@ -649,8 +661,8 @@ renderer.domElement.addEventListener('pointerup', e => {
   while (node){ if (node === gift){ inGift = true; break; } node = node.parent; }
   if (inGift && mode==='wrapped'){ startUnwrap(); return; }
   node = hits[0].object;
-  while (node && !node.userData.mem) node = node.parent;
-  if (node && node.userData.mem && node.scale.x > 0.5) openViewer(node.userData.mem);
+  while (node && !node.memRef) node = node.parent;
+  if (node && node.memRef && node.scale.x > 0.5) openViewer(node.memRef);
 });
 
 // ---------- viewer ----------
@@ -700,6 +712,20 @@ const sendBtn = document.getElementById('sendBtn');
 const btnRow = document.getElementById('btnRow');
 const chat = document.getElementById('chat');
 const esc = s => s.replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+
+// con la chat aperta l'inquadratura si alza, così l'albero resta visibile sopra il pannello
+function updateFraming(){
+  const chatOpen = !chat.hidden && !chat.classList.contains('mini') && !xrActive;
+  if (chatOpen) camera.setViewOffset(innerWidth, innerHeight, 0, innerHeight*0.13, innerWidth, innerHeight);
+  else camera.clearViewOffset();
+  camera.updateProjectionMatrix();
+}
+const chatToggle = document.getElementById('chatToggle');
+chatToggle.onclick = () => {
+  const mini = chat.classList.toggle('mini');
+  chatToggle.textContent = mini ? '▴' : '▾';
+  updateFraming();
+};
 
 function botSay(html){
   const d = document.createElement('div');
@@ -933,6 +959,7 @@ function wrapGift(){
   }
   mode = 'wrapped';
   chat.hidden = true;
+  updateFraming();
   applyGrowth(0, true);
   for (const g of ornGroup.children) g.userData.rung = false;
   gift.visible = true;
@@ -997,6 +1024,7 @@ function backToEditor(){
   applyGrowth(1, true);
   for (const g of ornGroup.children) g.scale.setScalar(1);
   chat.hidden = false;
+  updateFraming();
   subTitle.textContent = "Un regalo da decorare con foto, voci e parole.";
   botSay("Rieccoci! Aggiungi altri ricordi o impacchetta di nuovo.");
   decorateButtons();
@@ -1040,6 +1068,7 @@ async function startWebXR(){
   const viewerSpace = await session.requestReferenceSpace('viewer');
   hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
   xrActive = true; xrPlaced = false;
+  updateFraming();
   ground.visible = false; treeRoot.visible = false;
   session.addEventListener('select', () => {
     if (!reticle.visible) return;
@@ -1051,6 +1080,7 @@ async function startWebXR(){
     xrActive = false; hitTestSource = null;
     renderer.xr.enabled = false;
     xrOverlay.hidden = true; reticle.visible = false;
+    updateFraming();
     ground.visible = true; treeRoot.visible = true;
     treeRoot.position.set(0,0,0);
     applyGrowth(1, true);
@@ -1076,6 +1106,7 @@ async function arAction(){
 async function startReceiver(id){
   receiverMode = true;
   chat.hidden = true;
+  updateFraming();
   document.getElementById('loadingCard').hidden = false;
   try{
     const data = await rpc('get_gift_tree', {p_tree_id: id});
@@ -1123,6 +1154,7 @@ if (giftParam && ONLINE){
 } else {
   startChat();
 }
+updateFraming();
 })();
 </script>
 
