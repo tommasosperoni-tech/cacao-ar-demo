@@ -1,0 +1,868 @@
+<!doctype html>
+<html lang="it">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Albero dei Ricordi</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,700;1,9..144,500&display=swap">
+<style>
+  /* Layout: scena 3D a tutto schermo, chat-editor come bottom sheet, overlay per unwrap e viewer */
+  :root{
+    --bg:#f3efe4;        /* carta da regalo avorio */
+    --bg2:#e4dcc6;
+    --fg:#28311f;
+    --muted:#6b6a55;
+    --card:#fffdf6;
+    --line:#d8d0b8;
+    --gold:#b8892f;
+    --gold-fg:#fffaf0;
+    --pine:#2e5339;
+    --chip:#ece5d2;
+    --bot:#ece5d2;
+    --me:#2e5339;
+    --me-fg:#f2f0e4;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#131a12; --bg2:#1c2619; --fg:#eae7d8; --muted:#a3a58d;
+      --card:#1f281c; --line:#38452f; --gold:#d4a845; --gold-fg:#241a05;
+      --pine:#79a877; --chip:#2a3524; --bot:#2a3524; --me:#3c5a41; --me-fg:#eef0e0;
+      color-scheme:dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#131a12; --bg2:#1c2619; --fg:#eae7d8; --muted:#a3a58d;
+    --card:#1f281c; --line:#38452f; --gold:#d4a845; --gold-fg:#241a05;
+    --pine:#79a877; --chip:#2a3524; --bot:#2a3524; --me:#3c5a41; --me-fg:#eef0e0;
+    color-scheme:dark;
+  }
+  [hidden]{display:none!important}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font:15px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
+    overflow:hidden;
+  }
+  #stage{position:fixed; inset:0; background:linear-gradient(180deg,var(--bg) 0%,var(--bg2) 100%)}
+  #stage canvas{display:block; touch-action:none}
+
+  header{
+    position:fixed; left:0; right:0; top:0; pointer-events:none;
+    padding:calc(12px + env(safe-area-inset-top,0px)) 20px 8px;
+  }
+  h1{
+    margin:0; font-family:"Fraunces",Georgia,serif; font-weight:700;
+    font-size:clamp(20px,4.5vw,28px); text-wrap:balance;
+  }
+  .sub{margin:2px 0 0; color:var(--muted); font-size:13px; max-width:48ch}
+
+  /* ---- chat editor ---- */
+  #chat{
+    position:fixed; left:50%; transform:translateX(-50%);
+    bottom:0; width:min(480px,100%);
+    background:var(--card); border:1px solid var(--line); border-bottom:none;
+    border-radius:18px 18px 0 0; box-shadow:0 -8px 30px rgba(20,25,10,.16);
+    display:flex; flex-direction:column;
+    max-height:46vh;
+    padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  #msgs{
+    overflow-y:auto; padding:14px 14px 4px; display:flex; flex-direction:column; gap:8px;
+    scroll-behavior:smooth;
+  }
+  .msg{max-width:85%; padding:8px 12px; border-radius:14px; font-size:14px}
+  .msg.bot{background:var(--bot); border-bottom-left-radius:4px; align-self:flex-start}
+  .msg.me{background:var(--me); color:var(--me-fg); border-bottom-right-radius:4px; align-self:flex-end}
+  .msg .thumb{max-width:140px; border-radius:8px; display:block; margin-top:4px}
+  #inputRow{display:flex; gap:8px; padding:10px 14px 14px}
+  #inputRow input[type=text]{
+    flex:1; min-width:0; font:inherit; padding:9px 12px;
+    border:1px solid var(--line); border-radius:12px; background:var(--bg); color:var(--fg);
+  }
+  #btnRow{display:flex; flex-wrap:wrap; gap:8px; padding:4px 14px 14px}
+  button{
+    border:1px solid var(--line); background:var(--chip); color:var(--fg);
+    border-radius:12px; font:inherit; font-weight:600; cursor:pointer; padding:9px 13px;
+  }
+  button:focus-visible{outline:2px solid var(--gold); outline-offset:2px}
+  button.primary{background:var(--gold); color:var(--gold-fg); border-color:transparent}
+  #sendBtn{background:var(--pine); color:var(--me-fg); border-color:transparent}
+
+  /* ---- unwrap ---- */
+  #unwrapBar{
+    position:fixed; left:50%; transform:translateX(-50%);
+    bottom:calc(16px + env(safe-area-inset-bottom,0px));
+    display:flex; gap:10px; flex-wrap:wrap; justify-content:center;
+    width:min(480px,calc(100% - 32px));
+  }
+  #unwrapHint{
+    position:fixed; left:50%; transform:translateX(-50%);
+    bottom:calc(20px + env(safe-area-inset-bottom,0px));
+    background:var(--card); border:1px solid var(--line); border-radius:999px;
+    padding:10px 20px; font-size:14px; font-weight:600;
+    box-shadow:0 6px 24px rgba(20,25,10,.18);
+  }
+  #dedica{
+    position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    pointer-events:none; padding:24px; z-index:25;
+  }
+  #dedica .card{
+    background:var(--card); border:1px solid var(--gold); border-radius:16px;
+    max-width:420px; padding:26px 28px; text-align:center;
+    box-shadow:0 14px 40px rgba(20,25,10,.25);
+    animation:dedicaIn 1.2s ease both;
+  }
+  @keyframes dedicaIn{from{opacity:0; transform:translateY(14px)}to{opacity:1; transform:none}}
+  #dedica h2{margin:0 0 8px; font-family:"Fraunces",Georgia,serif; font-size:24px}
+  #dedica p{margin:0; font-family:"Fraunces",Georgia,serif; font-style:italic; font-size:17px; color:var(--muted)}
+  #dedica .close{pointer-events:auto; margin-top:16px}
+  @media (prefers-reduced-motion: reduce){ #dedica .card{animation:none} }
+
+  /* ---- viewer ricordo ---- */
+  #viewer{
+    position:fixed; inset:0; z-index:40; display:flex; align-items:center; justify-content:center;
+    background:rgba(12,16,8,.6); padding:16px;
+  }
+  #viewer .box{
+    background:var(--card); border:1px solid var(--line); border-radius:16px;
+    max-width:min(460px,100%); max-height:86vh; overflow:auto;
+    padding:16px; display:flex; flex-direction:column; gap:12px; align-items:center;
+  }
+  #viewer img, #viewer video{max-width:100%; max-height:60vh; border-radius:10px}
+  #viewer audio{width:100%}
+  #viewer .note{font-family:"Fraunces",Georgia,serif; font-style:italic; font-size:18px; text-align:center; padding:8px 4px}
+  #viewer .big{font-size:52px; line-height:1}
+
+  #toast{
+    position:fixed; left:50%; transform:translateX(-50%); top:calc(70px + env(safe-area-inset-top,0px));
+    background:var(--fg); color:var(--bg); padding:10px 16px; border-radius:10px;
+    font-size:13px; max-width:min(420px,calc(100% - 48px)); z-index:50; text-align:center;
+  }
+  #xrOverlay{
+    position:fixed; inset:0; display:flex; flex-direction:column;
+    justify-content:space-between; align-items:center; pointer-events:none;
+    padding:calc(16px + env(safe-area-inset-top,0px)) 16px calc(24px + env(safe-area-inset-bottom,0px));
+  }
+  #xrHint{background:rgba(20,25,10,.65); color:#fff; border-radius:999px; padding:8px 16px; font-size:14px}
+  #xrExit{pointer-events:auto; background:rgba(20,25,10,.75); color:#fff; border:none}
+</style>
+
+<div id="stage"></div>
+
+<header>
+  <h1>Albero dei Ricordi</h1>
+  <p class="sub" id="subTitle">Un regalo da decorare con foto, voci e parole.</p>
+</header>
+
+<div id="chat">
+  <div id="msgs" aria-live="polite"></div>
+  <div id="inputRow" hidden>
+    <input type="text" id="textInput" autocomplete="off">
+    <button id="sendBtn">Invia</button>
+  </div>
+  <div id="btnRow" hidden></div>
+</div>
+
+<div id="unwrapHint" hidden>🎁 Tocca il pacco per aprirlo</div>
+<div id="unwrapBar" hidden>
+  <button id="replayBtn">↺ Rivedi</button>
+  <button id="arBtn2">📷 Vedi in AR</button>
+  <button id="editBtn">✏️ Torna all'editor</button>
+  <button id="restartBtn">Ricomincia</button>
+</div>
+
+<div id="dedica" hidden>
+  <div class="card">
+    <div style="font-size:34px">🌟</div>
+    <h2 id="dedicaName"></h2>
+    <p id="dedicaText"></p>
+    <button class="close" id="dedicaClose">Esplora l'albero</button>
+  </div>
+</div>
+
+<div id="viewer" hidden>
+  <div class="box" id="viewerBox"></div>
+</div>
+
+<div id="toast" hidden></div>
+
+<div id="xrOverlay" hidden>
+  <button id="xrExit">✕ Esci dall'AR</button>
+  <div id="xrHint">Muovi il telefono, poi tocca per posizionare l'albero</div>
+</div>
+
+<input type="file" id="fileMedia" accept="image/*,video/*" multiple hidden>
+<input type="file" id="fileAudio" accept="audio/*" hidden>
+<a id="arLink" rel="ar" href="#" style="position:absolute;left:-9999px" aria-hidden="true"><img alt="" width="1" height="1"></a>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/libs/fflate.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/exporters/USDZExporter.js"></script>
+<script>
+(function(){
+'use strict';
+const STANDALONE_URL = "https://tommasosperoni-tech.github.io/cacao-ar-demo/regalo/";
+const embedded = (() => { try { return window.self !== window.top; } catch(e){ return true; } })();
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// ---------- scena ----------
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.05, 60);
+camera.position.set(2.1, 1.75, 3.0);
+
+scene.add(new THREE.HemisphereLight(0xf2eedd, 0x3c3322, 0.65));
+const sun = new THREE.DirectionalLight(0xfff0d8, 1.25);
+sun.position.set(3, 6, 2.5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024,1024);
+sun.shadow.camera.left=-3; sun.shadow.camera.right=3;
+sun.shadow.camera.top=4; sun.shadow.camera.bottom=-3;
+scene.add(sun);
+
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.05, 0);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI*0.52;
+controls.minDistance = 1.1; controls.maxDistance = 8;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.5;
+controls.addEventListener('start', ()=> controls.autoRotate = false);
+
+const ground = new THREE.Mesh(
+  new THREE.CylinderGeometry(1.45, 1.55, 0.06, 40),
+  new THREE.MeshStandardMaterial({color:0x7a6a45, roughness:1})
+);
+ground.position.y = -0.03; ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------- albero stilizzato ----------
+const TRUNK_H = 1.35;
+const treeRoot = new THREE.Group();
+scene.add(treeRoot);
+const parts = [];
+function reg(node, born, span){ parts.push({node, born, span}); }
+const clamp01 = v => Math.max(0, Math.min(1, v));
+const ss = k => k*k*(3-2*k);
+let rndSeed = 11;
+const rnd = () => (rndSeed = (rndSeed*16807) % 2147483647) / 2147483647;
+
+const trunkMat  = new THREE.MeshStandardMaterial({color:0x6d4f30, roughness:0.95});
+const leafMat   = new THREE.MeshStandardMaterial({color:0x35612c, roughness:0.75});
+const leafMat2  = new THREE.MeshStandardMaterial({color:0x4a7a3a, roughness:0.75});
+const goldMat   = new THREE.MeshStandardMaterial({color:0xc9a23a, roughness:0.35, metalness:0.6});
+
+function cyl(len, r0, r1){
+  const g = new THREE.CylinderGeometry(r1, r0, len, 7);
+  g.translate(0, len/2, 0);
+  return g;
+}
+const trunk = new THREE.Mesh(cyl(TRUNK_H, 0.075, 0.05), trunkMat);
+trunk.castShadow = true;
+treeRoot.add(trunk);
+const crown = new THREE.Group();
+treeRoot.add(crown);
+
+const anchors = []; // punti (coordinate "albero cresciuto") dove appendere i ricordi
+const leafGeo = new THREE.SphereGeometry(0.5, 9, 7);
+
+// tre palchi di rami che si aprono ad arco; le punte sono i ganci per i ricordi
+const TIERS = [
+  {y:0.52, n:6, len:0.95, tilt:1.25, born:0.30},
+  {y:0.88, n:5, len:0.75, tilt:1.05, born:0.42},
+  {y:1.18, n:4, len:0.55, tilt:0.85, born:0.54}
+];
+for (const tier of TIERS){
+  for (let i=0;i<tier.n;i++){
+    const a = (i/tier.n)*Math.PI*2 + rnd()*0.5;
+    const pivot = new THREE.Group();
+    pivot.position.set(0, tier.y, 0); pivot.rotation.y = a;
+    const tilt = new THREE.Group(); tilt.rotation.z = tier.tilt + rnd()*0.15;
+    pivot.add(tilt); crown.add(pivot);
+    const len = tier.len*(0.85 + rnd()*0.3);
+    const bm = new THREE.Mesh(cyl(len, 0.028, 0.014), trunkMat);
+    bm.castShadow = true; tilt.add(bm);
+    // ciuffi di fogliame lungo il ramo e in punta
+    for (let j=0;j<3;j++){
+      const t = 0.45 + j*0.27;
+      const cl = new THREE.Mesh(leafGeo, j%2 ? leafMat : leafMat2);
+      const s = 0.16 + rnd()*0.08 + (j===2?0.06:0);
+      cl.scale.set(s*1.25, s*0.75, s*1.25);
+      cl.position.set(0, len*t, 0);
+      cl.castShadow = true;
+      tilt.add(cl);
+    }
+    tilt.scale.setScalar(0.001);
+    reg(tilt, tier.born + i*0.02, 0.22);
+    // gancio: punto a 3/4 del ramo, nel sistema "cresciuto"
+    const hook = new THREE.Vector3(0, len*0.78, 0);
+    tilt.localToWorld; // (la matrice vera la calcoliamo dopo la build, con growth=1)
+    anchors.push({pivot, tilt, local:hook, used:false});
+  }
+}
+// cima
+const top = new THREE.Mesh(leafGeo, leafMat);
+top.scale.set(0.3,0.42,0.3); top.position.y = TRUNK_H + 0.18; top.castShadow = true;
+const topG = new THREE.Group(); topG.add(top); topG.scale.setScalar(0.001);
+crown.add(topG); reg(topG, 0.6, 0.2);
+const star = new THREE.Mesh(new THREE.OctahedronGeometry(0.07), goldMat);
+star.position.y = TRUNK_H + 0.42; star.castShadow = true;
+const starG = new THREE.Group(); starG.add(star); starG.scale.setScalar(0.001);
+crown.add(starG); reg(starG, 0.68, 0.15);
+
+// calcola le posizioni mondo dei ganci con l'albero cresciuto
+function computeAnchors(){
+  applyGrowth(1, true);
+  treeRoot.updateMatrixWorld(true);
+  for (const an of anchors){
+    an.world = an.tilt.localToWorld(an.local.clone());
+    treeRoot.worldToLocal(an.world); // in coordinate treeRoot, così segue l'albero in AR
+  }
+}
+
+// ---------- pacco regalo ----------
+const gift = new THREE.Group();
+const boxMat = new THREE.MeshStandardMaterial({color:0x8c2f2f, roughness:0.6});
+const box = new THREE.Mesh(new THREE.BoxGeometry(0.5,0.38,0.5), boxMat);
+box.position.y = 0.19; box.castShadow = true;
+const lid = new THREE.Mesh(new THREE.BoxGeometry(0.56,0.1,0.56), boxMat);
+lid.position.y = 0.43; lid.castShadow = true;
+const ribbon1 = new THREE.Mesh(new THREE.BoxGeometry(0.08,0.52,0.52), goldMat);
+ribbon1.position.y = 0.26;
+const ribbon2 = new THREE.Mesh(new THREE.BoxGeometry(0.52,0.52,0.08), goldMat);
+ribbon2.position.y = 0.26;
+gift.add(box, lid, ribbon1, ribbon2);
+gift.visible = false;
+scene.add(gift);
+
+// ---------- ricordi / decorazioni ----------
+const memories = []; // {type,url,mesh,el?,label}
+const ornGroup = new THREE.Group();
+treeRoot.add(ornGroup);
+const ringGeo = new THREE.TorusGeometry(0.085, 0.012, 8, 24);
+const discGeo = new THREE.CircleGeometry(0.082, 28);
+const stringGeo = new THREE.CylinderGeometry(0.004, 0.004, 1, 5);
+
+function emojiTexture(emoji, bg){
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const x = c.getContext('2d');
+  x.fillStyle = bg; x.beginPath(); x.arc(64,64,64,0,7); x.fill();
+  x.font = '64px system-ui'; x.textAlign='center'; x.textBaseline='middle';
+  x.fillText(emoji, 64, 70);
+  const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding;
+  return t;
+}
+function circleCropTexture(imgOrCanvas){
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const x = c.getContext('2d');
+  const w = imgOrCanvas.videoWidth || imgOrCanvas.naturalWidth || imgOrCanvas.width;
+  const h = imgOrCanvas.videoHeight || imgOrCanvas.naturalHeight || imgOrCanvas.height;
+  const s = Math.min(w,h);
+  x.beginPath(); x.arc(128,128,128,0,7); x.clip();
+  x.drawImage(imgOrCanvas, (w-s)/2, (h-s)/2, s, s, 0, 0, 256, 256);
+  const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding;
+  return t;
+}
+
+let hangIndex = 0;
+function freeAnchor(){
+  if (hangIndex >= anchors.length) return null;
+  // alterna i palchi per distribuire bene
+  const order = [0,7,13,3,9,15,5,11,1,8,14,4,10,2,6,12];
+  const idx = order[hangIndex % order.length] % anchors.length;
+  hangIndex++;
+  let an = anchors[idx];
+  if (an.used) an = anchors.find(a=>!a.used);
+  if (!an) return null;
+  an.used = true;
+  return an;
+}
+
+function hangMemory(mem, texture){
+  const an = freeAnchor();
+  if (!an){ botSay("L'albero è pieno! 🌟 Direi che è pronto per essere impacchettato."); return null; }
+  const g = new THREE.Group();
+  g.position.copy(an.world);
+  // filo
+  const str = new THREE.Mesh(stringGeo, goldMat);
+  str.scale.y = 0.08; str.position.y = -0.04;
+  g.add(str);
+  // medaglione (billboard)
+  const med = new THREE.Group();
+  med.position.y = -0.17;
+  const ring = new THREE.Mesh(ringGeo, goldMat);
+  ring.castShadow = true;
+  const disc = new THREE.Mesh(discGeo, new THREE.MeshStandardMaterial({
+    map: texture, roughness:0.5, side:THREE.DoubleSide
+  }));
+  disc.position.z = 0.002;
+  med.add(ring, disc);
+  g.add(med);
+  g.userData.med = med;
+  g.userData.mem = mem;
+  g.scale.setScalar(0.001);
+  ornGroup.add(g);
+  mem.mesh = g;
+  mem.disc = disc;
+  // in modalità editor appare subito con un pop
+  mem.popT = 0;
+  chime();
+  return g;
+}
+
+// suono "campanellino" (WebAudio, dopo interazione utente)
+let actx;
+function chime(){
+  try{
+    actx = actx || new (window.AudioContext||window.webkitAudioContext)();
+    const o = actx.createOscillator(), ga = actx.createGain();
+    o.type='sine'; o.frequency.value = 1180 + Math.random()*220;
+    ga.gain.setValueAtTime(0.0001, actx.currentTime);
+    ga.gain.exponentialRampToValueAtTime(0.12, actx.currentTime+0.015);
+    ga.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime+0.7);
+    o.connect(ga).connect(actx.destination);
+    o.start(); o.stop(actx.currentTime+0.75);
+  }catch(e){}
+}
+
+// ---------- crescita ----------
+let growth = 1;
+function applyGrowth(g, silent){
+  growth = clamp01(g);
+  const tk = ss(clamp01((growth - 0.02) / 0.42));
+  trunk.scale.set(0.3 + 0.7*tk, Math.max(tk, 0.001), 0.3 + 0.7*tk);
+  crown.scale.setScalar(Math.max(tk, 0.001));
+  crown.position.y = 0;
+  for (const p of parts){
+    const k = ss(clamp01((growth - p.born) / p.span));
+    p.node.scale.setScalar(Math.max(k, 0.001));
+  }
+  // decorazioni: compaiono in sequenza dopo che l'albero è cresciuto
+  const list = ornGroup.children;
+  for (let i=0;i<list.length;i++){
+    const born = 0.70 + (i/Math.max(list.length,1))*0.22;
+    const k = ss(clamp01((growth - born)/0.06));
+    if (!silent && unwrapping && k>0 && !list[i].userData.rung){ list[i].userData.rung = true; chime(); }
+    list[i].scale.setScalar(Math.max(k, 0.001));
+  }
+}
+
+// ---------- stato / modalità ----------
+let mode = 'editor';       // editor | wrapped | unwrapping | done
+let unwrapping = false;
+let recipient = '', dedication = '';
+
+// ---------- loop ----------
+const clock = new THREE.Clock();
+let hitTestSource = null, xrActive = false, xrPlaced = false;
+const reticle = new THREE.Mesh(
+  new THREE.RingGeometry(0.11, 0.14, 32).rotateX(-Math.PI/2),
+  new THREE.MeshBasicMaterial({color:0xffffff})
+);
+reticle.matrixAutoUpdate = false; reticle.visible = false;
+scene.add(reticle);
+
+const camQ = new THREE.Quaternion(), parQ = new THREE.Quaternion();
+let unwrapT = -1;
+renderer.setAnimationLoop((t, frame) => {
+  const dt = Math.min(clock.getDelta(), 0.1);
+  // pop delle decorazioni appese in editor
+  for (const m of memories){
+    if (m.popT != null && m.popT >= 0 && m.mesh && mode==='editor'){
+      m.popT += dt*2.2;
+      const k = Math.min(m.popT, 1);
+      const over = 1 + 0.25*Math.sin(Math.min(k*Math.PI,Math.PI));
+      m.mesh.scale.setScalar(ss(k)*over);
+      if (k>=1){ m.mesh.scale.setScalar(1); m.popT = -1; }
+    }
+  }
+  // animazione di spacchettamento
+  if (unwrapT >= 0){
+    unwrapT += dt / (reducedMotion ? 0.01 : 7);
+    applyGrowth(Math.min(unwrapT, 1));
+    if (unwrapT >= 1){
+      unwrapT = -1; unwrapping = false; mode = 'done';
+      showDedica();
+    }
+  }
+  // i medaglioni guardano sempre la camera
+  camera.getWorldQuaternion(camQ);
+  for (const g of ornGroup.children){
+    const med = g.userData.med;
+    med.parent.getWorldQuaternion(parQ);
+    med.quaternion.copy(parQ.invert()).multiply(camQ);
+  }
+  // pacco che "respira"
+  if (gift.visible){
+    gift.rotation.y += dt*0.6;
+    gift.position.y = 0.03 + Math.sin(t*0.002)*0.02;
+  }
+  if (xrActive && frame && hitTestSource){
+    const hits = frame.getHitTestResults(hitTestSource);
+    if (hits.length){
+      const pose = hits[0].getPose(renderer.xr.getReferenceSpace());
+      reticle.visible = true;
+      reticle.matrix.fromArray(pose.transform.matrix);
+    } else reticle.visible = false;
+  }
+  if (!xrActive) controls.update();
+  renderer.render(scene, camera);
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------- tap sui ricordi ----------
+const ray = new THREE.Raycaster();
+const ptr = new THREE.Vector2();
+let downX=0, downY=0;
+renderer.domElement.addEventListener('pointerdown', e => { downX=e.clientX; downY=e.clientY; });
+renderer.domElement.addEventListener('pointerup', e => {
+  if (Math.hypot(e.clientX-downX, e.clientY-downY) > 8) return;
+  ptr.x = (e.clientX/innerWidth)*2-1; ptr.y = -(e.clientY/innerHeight)*2+1;
+  ray.setFromCamera(ptr, camera);
+  const meshes = [];
+  ornGroup.traverse(o => { if (o.isMesh) meshes.push(o); });
+  if (gift.visible) gift.traverse(o => { if (o.isMesh) meshes.push(o); });
+  const hits = ray.intersectObjects(meshes);
+  if (!hits.length) return;
+  // tap sul pacco?
+  let o = hits[0].object;
+  let inGift = false, node = o;
+  while (node){ if (node === gift){ inGift = true; break; } node = node.parent; }
+  if (inGift && mode==='wrapped'){ startUnwrap(); return; }
+  // tap su una decorazione
+  node = o;
+  while (node && !node.userData.mem) node = node.parent;
+  if (node && node.userData.mem && node.scale.x > 0.5) openViewer(node.userData.mem);
+});
+
+// ---------- viewer ----------
+const viewer = document.getElementById('viewer');
+const viewerBox = document.getElementById('viewerBox');
+function openViewer(mem){
+  viewerBox.innerHTML = '';
+  if (mem.type==='photo'){
+    const img = document.createElement('img'); img.src = mem.url; viewerBox.appendChild(img);
+  } else if (mem.type==='video'){
+    const v = document.createElement('video');
+    v.src = mem.url; v.controls = true; v.autoplay = true; v.playsInline = true;
+    viewerBox.appendChild(v);
+  } else if (mem.type==='audio'){
+    const big = document.createElement('div'); big.className='big'; big.textContent='🎵';
+    const a = document.createElement('audio'); a.src = mem.url; a.controls = true; a.autoplay = true;
+    viewerBox.append(big, a);
+  } else {
+    const n = document.createElement('div'); n.className='note'; n.textContent = '“' + mem.text + '”';
+    viewerBox.appendChild(n);
+  }
+  const close = document.createElement('button');
+  close.textContent = 'Chiudi'; close.onclick = closeViewer;
+  viewerBox.appendChild(close);
+  viewer.hidden = false;
+}
+function closeViewer(){
+  viewer.hidden = true;
+  viewerBox.querySelectorAll('video,audio').forEach(m => m.pause());
+}
+viewer.addEventListener('click', e => { if (e.target === viewer) closeViewer(); });
+
+// ---------- toast ----------
+const toast = document.getElementById('toast');
+let toastTimer;
+function showToast(msg, ms){
+  toast.textContent = msg; toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.hidden = true, ms || 5000);
+}
+
+// ---------- chat editor ----------
+const msgs = document.getElementById('msgs');
+const inputRow = document.getElementById('inputRow');
+const textInput = document.getElementById('textInput');
+const sendBtn = document.getElementById('sendBtn');
+const btnRow = document.getElementById('btnRow');
+const chat = document.getElementById('chat');
+
+function botSay(html){
+  const d = document.createElement('div');
+  d.className = 'msg bot'; d.innerHTML = html;
+  msgs.appendChild(d); msgs.scrollTop = msgs.scrollHeight;
+}
+function meSay(text, thumbUrl){
+  const d = document.createElement('div');
+  d.className = 'msg me'; d.textContent = text;
+  if (thumbUrl){
+    const i = document.createElement('img'); i.className='thumb'; i.src = thumbUrl;
+    d.appendChild(i);
+  }
+  msgs.appendChild(d); msgs.scrollTop = msgs.scrollHeight;
+}
+function askText(placeholder, cb){
+  btnRow.hidden = true;
+  inputRow.hidden = false;
+  textInput.placeholder = placeholder;
+  textInput.value = '';
+  textInput.focus();
+  sendBtn.onclick = textInput.onkeydown = e => {
+    if (e.type==='keydown' && e.key!=='Enter') return;
+    const v = textInput.value.trim();
+    if (!v) return;
+    inputRow.hidden = true;
+    cb(v);
+  };
+}
+function showButtons(defs){
+  inputRow.hidden = true;
+  btnRow.innerHTML = '';
+  for (const [label, cls, fn] of defs){
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.onclick = fn;
+    btnRow.appendChild(b);
+  }
+  btnRow.hidden = false;
+}
+
+const fileMedia = document.getElementById('fileMedia');
+const fileAudio = document.getElementById('fileAudio');
+
+function decorateButtons(){
+  showButtons([
+    ['📷 Foto o video', '', () => fileMedia.click()],
+    ['🎙️ Audio', '', () => fileAudio.click()],
+    ['💌 Bigliettino', '', addNote],
+    ['🎁 Impacchetta', 'primary', wrapGift],
+  ]);
+}
+
+const esc = s => s.replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+function startChat(){
+  botSay("Ciao! 🌳 Costruiamo insieme un regalo: un albero decorato con i vostri ricordi.<br>Per chi è?");
+  askText("Il nome della persona…", v => {
+    recipient = v;
+    meSay(v);
+    botSay("Che bello. Ora scrivi una dedica: apparirà alla fine, quando " + esc(recipient) + " aprirà il regalo.");
+    askText("La tua dedica…", d => {
+      dedication = d;
+      meSay(d);
+      botSay("Perfetto. Ora decoriamo l'albero: carica <b>foto</b>, <b>video</b>, <b>messaggi vocali</b> o scrivi <b>bigliettini</b>. Ogni ricordo diventa una decorazione appesa ai rami — toccala per rivederla.");
+      decorateButtons();
+    });
+  });
+}
+
+fileMedia.addEventListener('change', async () => {
+  for (const f of fileMedia.files){
+    if (f.type.startsWith('image/')) await addPhoto(f);
+    else if (f.type.startsWith('video/')) await addVideo(f);
+  }
+  fileMedia.value = '';
+});
+fileAudio.addEventListener('change', () => {
+  for (const f of fileAudio.files) addAudio(f);
+  fileAudio.value = '';
+});
+
+function loadImage(url){
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => res(img);
+    img.onerror = rej;
+    img.src = url;
+  });
+}
+async function addPhoto(f){
+  const url = URL.createObjectURL(f);
+  try{
+    const img = await loadImage(url);
+    const tex = circleCropTexture(img);
+    const mem = {type:'photo', url, label:f.name};
+    if (!hangMemory(mem, tex)) return;
+    memories.push(mem);
+    meSay('📷 ' + f.name, url);
+    botSay("Appesa! ✨");
+  }catch(e){ showToast("Non riesco a leggere questa immagine."); }
+}
+async function addVideo(f){
+  const url = URL.createObjectURL(f);
+  const mem = {type:'video', url, label:f.name};
+  let tex;
+  try{
+    tex = await new Promise((res, rej) => {
+      const v = document.createElement('video');
+      v.muted = true; v.playsInline = true; v.preload = 'metadata';
+      v.src = url;
+      v.onloadeddata = () => { v.currentTime = Math.min(0.5, (v.duration||1)/3); };
+      v.onseeked = () => { try{ res(circleCropTexture(v)); }catch(e){ rej(e); } };
+      v.onerror = rej;
+      setTimeout(() => rej(new Error('timeout')), 6000);
+    });
+  }catch(e){
+    tex = emojiTexture('🎬', '#4a3b63');
+  }
+  if (!hangMemory(mem, tex)) return;
+  memories.push(mem);
+  meSay('🎬 ' + f.name);
+  botSay("Video appeso! Toccalo per guardarlo. ✨");
+}
+function addAudio(f){
+  const url = URL.createObjectURL(f);
+  const mem = {type:'audio', url, label:f.name};
+  if (!hangMemory(mem, emojiTexture('🎵', '#8c6d2f'))) return;
+  memories.push(mem);
+  meSay('🎙️ ' + f.name);
+  botSay("Voce appesa all'albero. Toccala per ascoltarla. ✨");
+}
+function addNote(){
+  askText("Scrivi il bigliettino…", txt => {
+    meSay('💌 ' + txt);
+    const mem = {type:'note', text:txt, label:'bigliettino'};
+    if (hangMemory(mem, emojiTexture('💌', '#9c4a4a'))){
+      memories.push(mem);
+      botSay("Bigliettino appeso. ✨");
+    }
+    decorateButtons();
+  });
+}
+
+// ---------- impacchetta / spacchetta ----------
+const unwrapHint = document.getElementById('unwrapHint');
+const unwrapBar = document.getElementById('unwrapBar');
+const dedicaEl = document.getElementById('dedica');
+const subTitle = document.getElementById('subTitle');
+
+function wrapGift(){
+  if (!memories.length){
+    botSay("L'albero è ancora spoglio! Carica almeno un ricordo prima di impacchettare. 🙂");
+    return;
+  }
+  mode = 'wrapped';
+  chat.hidden = true;
+  applyGrowth(0, true);
+  for (const g of ornGroup.children) g.userData.rung = false;
+  gift.visible = true;
+  controls.autoRotate = true;
+  subTitle.textContent = "Così lo vedrà " + recipient + ".";
+  unwrapHint.hidden = false;
+}
+function startUnwrap(){
+  mode = 'unwrapping'; unwrapping = true;
+  unwrapHint.hidden = true;
+  gift.visible = false;
+  chime();
+  unwrapT = 0;
+}
+function showDedica(){
+  document.getElementById('dedicaName').textContent = "Per " + recipient;
+  document.getElementById('dedicaText').textContent = "“" + dedication + "”";
+  dedicaEl.hidden = false;
+}
+document.getElementById('dedicaClose').onclick = () => {
+  dedicaEl.hidden = true;
+  unwrapBar.hidden = false;
+  subTitle.textContent = "Tocca le decorazioni per rivivere i ricordi.";
+};
+document.getElementById('replayBtn').onclick = () => {
+  unwrapBar.hidden = true;
+  wrapGift();
+};
+document.getElementById('editBtn').onclick = () => {
+  mode = 'editor';
+  unwrapBar.hidden = true;
+  applyGrowth(1, true);
+  for (const g of ornGroup.children) g.scale.setScalar(1);
+  chat.hidden = false;
+  subTitle.textContent = "Un regalo da decorare con foto, voci e parole.";
+  botSay("Rieccoci! Aggiungi altri ricordi o impacchetta di nuovo.");
+  decorateButtons();
+};
+document.getElementById('restartBtn').onclick = () => location.reload();
+
+// ---------- AR ----------
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+              (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+let xrSupported = false;
+if (navigator.xr && navigator.xr.isSessionSupported){
+  navigator.xr.isSessionSupported('immersive-ar').then(ok => { xrSupported = ok; }).catch(()=>{});
+}
+function exportSnapshot(){
+  const g = treeRoot.clone(true);
+  const dead = [];
+  g.traverse(o => { if (o !== g && o.scale.x < 0.01 && o.scale.y < 0.01) dead.push(o); });
+  dead.forEach(o => o.parent && o.parent.remove(o));
+  g.updateMatrixWorld(true);
+  return g;
+}
+async function startQuickLook(){
+  try{
+    const exporter = new THREE.USDZExporter();
+    const data = await exporter.parse(exportSnapshot());
+    const url = URL.createObjectURL(new Blob([data], {type:'model/vnd.usdz+zip'}));
+    const a = document.getElementById('arLink');
+    a.href = url; a.click();
+  }catch(e){ showToast("Export AR non riuscito: " + e.message); }
+}
+const xrOverlay = document.getElementById('xrOverlay');
+async function startWebXR(){
+  const session = await navigator.xr.requestSession('immersive-ar', {
+    requiredFeatures: ['hit-test'],
+    optionalFeatures: ['dom-overlay'],
+    domOverlay: { root: xrOverlay }
+  });
+  xrOverlay.hidden = false;
+  renderer.xr.enabled = true;
+  renderer.xr.setReferenceSpaceType('local');
+  await renderer.xr.setSession(session);
+  const viewerSpace = await session.requestReferenceSpace('viewer');
+  hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
+  xrActive = true; xrPlaced = false;
+  ground.visible = false; treeRoot.visible = false;
+  session.addEventListener('select', () => {
+    if (!reticle.visible) return;
+    treeRoot.position.setFromMatrixPosition(reticle.matrix);
+    treeRoot.visible = true;
+    if (!xrPlaced){ xrPlaced = true; applyGrowth(0, true); unwrapping = true; unwrapT = 0; mode='unwrapping'; }
+  });
+  session.addEventListener('end', () => {
+    xrActive = false; hitTestSource = null;
+    renderer.xr.enabled = false;
+    xrOverlay.hidden = true; reticle.visible = false;
+    ground.visible = true; treeRoot.visible = true;
+    treeRoot.position.set(0,0,0);
+    renderer.setSize(innerWidth, innerHeight);
+  });
+  document.getElementById('xrExit').onclick = () => session.end();
+}
+document.getElementById('arBtn2').onclick = async () => {
+  if (embedded){
+    showToast("Dentro claude.ai la fotocamera è bloccata. L'AR funziona nella versione standalone: " + STANDALONE_URL, 9000);
+    return;
+  }
+  if (xrSupported){
+    try { await startWebXR(); return; }
+    catch(e){ showToast("WebXR non disponibile qui (" + e.message + ")."); return; }
+  }
+  if (isIOS){ await startQuickLook(); return; }
+  showToast("Apri questa pagina da smartphone per l'AR (Safari su iPhone, Chrome su Android).");
+};
+
+// ---------- avvio ----------
+computeAnchors();
+applyGrowth(1, true);
+startChat();
+})();
+</script>
+
+</html>
