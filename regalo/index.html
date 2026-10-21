@@ -7,7 +7,7 @@
 <style>
   /* Layout: scena 3D a tutto schermo, chat-editor come bottom sheet, overlay per unwrap e viewer */
   :root{
-    --bg:#f3efe4;        /* carta da regalo avorio */
+    --bg:#f3efe4;
     --bg2:#e4dcc6;
     --fg:#28311f;
     --muted:#6b6a55;
@@ -91,8 +91,21 @@
   #unwrapBar{
     position:fixed; left:50%; transform:translateX(-50%);
     bottom:calc(16px + env(safe-area-inset-bottom,0px));
-    display:flex; gap:10px; flex-wrap:wrap; justify-content:center;
+    display:flex; flex-direction:column; gap:10px; align-items:center;
     width:min(480px,calc(100% - 32px));
+  }
+  #unwrapBtns{display:flex; gap:10px; flex-wrap:wrap; justify-content:center}
+  #sharePanel{
+    background:var(--card); border:1px solid var(--gold); border-radius:14px;
+    padding:12px 14px; width:100%; box-sizing:border-box;
+    display:flex; flex-direction:column; gap:8px;
+    box-shadow:0 8px 26px rgba(20,25,10,.18);
+  }
+  #sharePanel label{font-size:12px; font-weight:700; color:var(--muted); letter-spacing:.04em; text-transform:uppercase}
+  #shareRow{display:flex; gap:8px}
+  #shareUrl{
+    flex:1; min-width:0; font:13px/1.3 ui-monospace,Menlo,monospace; padding:8px 10px;
+    border:1px solid var(--line); border-radius:10px; background:var(--bg); color:var(--fg);
   }
   #unwrapHint{
     position:fixed; left:50%; transform:translateX(-50%);
@@ -100,6 +113,13 @@
     background:var(--card); border:1px solid var(--line); border-radius:999px;
     padding:10px 20px; font-size:14px; font-weight:600;
     box-shadow:0 6px 24px rgba(20,25,10,.18);
+  }
+  #loadingCard{
+    position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:20;
+  }
+  #loadingCard .card{
+    background:var(--card); border:1px solid var(--line); border-radius:14px;
+    padding:18px 26px; font-weight:600; box-shadow:0 10px 30px rgba(20,25,10,.2);
   }
   #dedica{
     position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
@@ -162,12 +182,18 @@
   <div id="btnRow" hidden></div>
 </div>
 
+<div id="loadingCard" hidden><div class="card">🎁 Sto preparando il tuo regalo…</div></div>
 <div id="unwrapHint" hidden>🎁 Tocca il pacco per aprirlo</div>
+
 <div id="unwrapBar" hidden>
-  <button id="replayBtn">↺ Rivedi</button>
-  <button id="arBtn2">📷 Vedi in AR</button>
-  <button id="editBtn">✏️ Torna all'editor</button>
-  <button id="restartBtn">Ricomincia</button>
+  <div id="sharePanel" hidden>
+    <label>Link regalo — invialo a chi vuoi tu</label>
+    <div id="shareRow">
+      <input id="shareUrl" readonly>
+      <button id="copyBtn" class="primary">Copia</button>
+    </div>
+  </div>
+  <div id="unwrapBtns"></div>
 </div>
 
 <div id="dedica" hidden>
@@ -202,8 +228,34 @@
 (function(){
 'use strict';
 const STANDALONE_URL = "https://tommasosperoni-tech.github.io/cacao-ar-demo/regalo/";
+const SUPA_URL = "https://xlljmxtkebkmaoewrhri.supabase.co";
+const SUPA_KEY = "sb_publishable_77vt4pZk3UBfxJYBSLrPzQ_acRR59aV";
 const embedded = (() => { try { return window.self !== window.top; } catch(e){ return true; } })();
+const ONLINE = !embedded; // dentro claude.ai le fetch esterne sono bloccate: modalità solo locale
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// ---------- API ----------
+async function rpc(fn, args){
+  const r = await fetch(SUPA_URL + '/rest/v1/rpc/' + fn, {
+    method:'POST',
+    headers:{ 'apikey':SUPA_KEY, 'Authorization':'Bearer '+SUPA_KEY, 'Content-Type':'application/json' },
+    body: JSON.stringify(args)
+  });
+  if (!r.ok) throw new Error('API ' + r.status);
+  const txt = await r.text();
+  return txt ? JSON.parse(txt) : null;
+}
+async function uploadMedia(treeId, body, ext){
+  const path = treeId + '/' + (crypto.randomUUID ? crypto.randomUUID() : Date.now()+'-'+Math.random().toString(36).slice(2)) + '.' + ext;
+  const r = await fetch(SUPA_URL + '/storage/v1/object/memories/' + path, {
+    method:'POST',
+    headers:{ 'apikey':SUPA_KEY, 'Authorization':'Bearer '+SUPA_KEY, 'Content-Type': body.type || 'application/octet-stream' },
+    body
+  });
+  if (!r.ok) throw new Error('upload ' + r.status);
+  return path;
+}
+const mediaUrl = p => SUPA_URL + '/storage/v1/object/public/memories/' + p;
 
 // ---------- scena ----------
 const stage = document.getElementById('stage');
@@ -243,87 +295,161 @@ const ground = new THREE.Mesh(
 ground.position.y = -0.03; ground.receiveShadow = true;
 scene.add(ground);
 
-// ---------- albero stilizzato ----------
-const TRUNK_H = 1.35;
+// ---------- albero procedurale (3 varianti) ----------
 const treeRoot = new THREE.Group();
 scene.add(treeRoot);
-const parts = [];
-function reg(node, born, span){ parts.push({node, born, span}); }
+const ornGroup = new THREE.Group();
+treeRoot.add(ornGroup);
+
+let parts = [], anchors = [], trunk = null, crown = null, topperNode = null, topMountY = 1.8;
 const clamp01 = v => Math.max(0, Math.min(1, v));
 const ss = k => k*k*(3-2*k);
 let rndSeed = 11;
 const rnd = () => (rndSeed = (rndSeed*16807) % 2147483647) / 2147483647;
+function reg(node, born, span){ parts.push({node, born, span}); }
 
-const trunkMat  = new THREE.MeshStandardMaterial({color:0x6d4f30, roughness:0.95});
-const leafMat   = new THREE.MeshStandardMaterial({color:0x35612c, roughness:0.75});
-const leafMat2  = new THREE.MeshStandardMaterial({color:0x4a7a3a, roughness:0.75});
-const goldMat   = new THREE.MeshStandardMaterial({color:0xc9a23a, roughness:0.35, metalness:0.6});
-
+const goldMat = new THREE.MeshStandardMaterial({color:0xc9a23a, roughness:0.35, metalness:0.6});
+const leafGeo = new THREE.SphereGeometry(0.5, 9, 7);
 function cyl(len, r0, r1){
   const g = new THREE.CylinderGeometry(r1, r0, len, 7);
   g.translate(0, len/2, 0);
   return g;
 }
-const trunk = new THREE.Mesh(cyl(TRUNK_H, 0.075, 0.05), trunkMat);
-trunk.castShadow = true;
-treeRoot.add(trunk);
-const crown = new THREE.Group();
-treeRoot.add(crown);
 
-const anchors = []; // punti (coordinate "albero cresciuto") dove appendere i ricordi
-const leafGeo = new THREE.SphereGeometry(0.5, 9, 7);
+const TREE_DEFS = {
+  classico: {label:'🌳 Classico', trunkC:0x6d4f30, leafA:0x35612c, leafB:0x4a7a3a},
+  ciliegio: {label:'🌸 Ciliegio', trunkC:0x5e4636, leafA:0xd68fa8, leafB:0xe6aec2},
+  abete:    {label:'🌲 Abete',    trunkC:0x5a4330, leafA:0x2c5234, leafB:0x376341}
+};
+const TOPPER_DEFS = {stella:'⭐ Stella', cuore:'❤️ Cuore', luna:'🌙 Luna'};
 
-// tre palchi di rami che si aprono ad arco; le punte sono i ganci per i ricordi
-const TIERS = [
-  {y:0.52, n:6, len:0.95, tilt:1.25, born:0.30},
-  {y:0.88, n:5, len:0.75, tilt:1.05, born:0.42},
-  {y:1.18, n:4, len:0.55, tilt:0.85, born:0.54}
-];
-for (const tier of TIERS){
-  for (let i=0;i<tier.n;i++){
-    const a = (i/tier.n)*Math.PI*2 + rnd()*0.5;
-    const pivot = new THREE.Group();
-    pivot.position.set(0, tier.y, 0); pivot.rotation.y = a;
-    const tilt = new THREE.Group(); tilt.rotation.z = tier.tilt + rnd()*0.15;
-    pivot.add(tilt); crown.add(pivot);
-    const len = tier.len*(0.85 + rnd()*0.3);
-    const bm = new THREE.Mesh(cyl(len, 0.028, 0.014), trunkMat);
-    bm.castShadow = true; tilt.add(bm);
-    // ciuffi di fogliame lungo il ramo e in punta
-    for (let j=0;j<3;j++){
-      const t = 0.45 + j*0.27;
-      const cl = new THREE.Mesh(leafGeo, j%2 ? leafMat : leafMat2);
-      const s = 0.16 + rnd()*0.08 + (j===2?0.06:0);
-      cl.scale.set(s*1.25, s*0.75, s*1.25);
-      cl.position.set(0, len*t, 0);
-      cl.castShadow = true;
-      tilt.add(cl);
+function buildRoundTree(def){
+  const TRUNK_H = 1.35;
+  const trunkMat = new THREE.MeshStandardMaterial({color:def.trunkC, roughness:0.95});
+  const leafMat  = new THREE.MeshStandardMaterial({color:def.leafA, roughness:0.75});
+  const leafMat2 = new THREE.MeshStandardMaterial({color:def.leafB, roughness:0.75});
+  trunk = new THREE.Mesh(cyl(TRUNK_H, 0.075, 0.05), trunkMat);
+  trunk.castShadow = true; treeRoot.add(trunk);
+  crown = new THREE.Group(); treeRoot.add(crown);
+  const TIERS = [
+    {y:0.52, n:6, len:0.95, tilt:1.25, born:0.30},
+    {y:0.88, n:5, len:0.75, tilt:1.05, born:0.42},
+    {y:1.18, n:4, len:0.55, tilt:0.85, born:0.54}
+  ];
+  for (const tier of TIERS){
+    for (let i=0;i<tier.n;i++){
+      const a = (i/tier.n)*Math.PI*2 + rnd()*0.5;
+      const pivot = new THREE.Group();
+      pivot.position.set(0, tier.y, 0); pivot.rotation.y = a;
+      const tilt = new THREE.Group(); tilt.rotation.z = tier.tilt + rnd()*0.15;
+      pivot.add(tilt); crown.add(pivot);
+      const len = tier.len*(0.85 + rnd()*0.3);
+      const bm = new THREE.Mesh(cyl(len, 0.028, 0.014), trunkMat);
+      bm.castShadow = true; tilt.add(bm);
+      for (let j=0;j<3;j++){
+        const t = 0.45 + j*0.27;
+        const cl = new THREE.Mesh(leafGeo, j%2 ? leafMat : leafMat2);
+        const s = 0.16 + rnd()*0.08 + (j===2?0.06:0);
+        cl.scale.set(s*1.25, s*0.75, s*1.25);
+        cl.position.set(0, len*t, 0);
+        cl.castShadow = true;
+        tilt.add(cl);
+      }
+      tilt.scale.setScalar(0.001);
+      reg(tilt, tier.born + i*0.02, 0.22);
+      anchors.push({node:tilt, local:new THREE.Vector3(0, len*0.78, 0), used:false});
     }
-    tilt.scale.setScalar(0.001);
-    reg(tilt, tier.born + i*0.02, 0.22);
-    // gancio: punto a 3/4 del ramo, nel sistema "cresciuto"
-    const hook = new THREE.Vector3(0, len*0.78, 0);
-    tilt.localToWorld; // (la matrice vera la calcoliamo dopo la build, con growth=1)
-    anchors.push({pivot, tilt, local:hook, used:false});
   }
+  const top = new THREE.Mesh(leafGeo, leafMat);
+  top.scale.set(0.3,0.42,0.3); top.position.y = TRUNK_H + 0.18; top.castShadow = true;
+  const topG = new THREE.Group(); topG.add(top); topG.scale.setScalar(0.001);
+  crown.add(topG); reg(topG, 0.6, 0.2);
+  topMountY = TRUNK_H + 0.44;
 }
-// cima
-const top = new THREE.Mesh(leafGeo, leafMat);
-top.scale.set(0.3,0.42,0.3); top.position.y = TRUNK_H + 0.18; top.castShadow = true;
-const topG = new THREE.Group(); topG.add(top); topG.scale.setScalar(0.001);
-crown.add(topG); reg(topG, 0.6, 0.2);
-const star = new THREE.Mesh(new THREE.OctahedronGeometry(0.07), goldMat);
-star.position.y = TRUNK_H + 0.42; star.castShadow = true;
-const starG = new THREE.Group(); starG.add(star); starG.scale.setScalar(0.001);
-crown.add(starG); reg(starG, 0.68, 0.15);
 
-// calcola le posizioni mondo dei ganci con l'albero cresciuto
-function computeAnchors(){
+function buildPineTree(def){
+  const trunkMat = new THREE.MeshStandardMaterial({color:def.trunkC, roughness:0.95});
+  trunk = new THREE.Mesh(cyl(0.5, 0.07, 0.055), trunkMat);
+  trunk.castShadow = true; treeRoot.add(trunk);
+  crown = new THREE.Group(); treeRoot.add(crown);
+  const CONES = [
+    {y:0.34, r:0.72, h:0.62, born:0.30},
+    {y:0.72, r:0.57, h:0.56, born:0.42},
+    {y:1.08, r:0.43, h:0.50, born:0.52},
+    {y:1.42, r:0.30, h:0.44, born:0.62}
+  ];
+  CONES.forEach((c, ci) => {
+    const mat = new THREE.MeshStandardMaterial({color: ci%2 ? def.leafB : def.leafA, roughness:0.8});
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(c.r, c.h, 10), mat);
+    cone.position.y = c.h/2; cone.castShadow = true;
+    const g = new THREE.Group(); g.position.y = c.y; g.add(cone);
+    g.scale.setScalar(0.001);
+    crown.add(g); reg(g, c.born, 0.2);
+    if (ci < 3){
+      const n = [6,5,4][ci];
+      for (let i=0;i<n;i++){
+        const a = (i/n)*Math.PI*2 + ci*0.5 + rnd()*0.3;
+        anchors.push({node:g, local:new THREE.Vector3(Math.cos(a)*c.r*0.82, 0.10, Math.sin(a)*c.r*0.82), used:false});
+      }
+    }
+  });
+  topMountY = 1.42 + 0.44 + 0.1;
+}
+
+function makeTopperMesh(name){
+  let geo;
+  if (name === 'cuore'){
+    const s = new THREE.Shape();
+    s.moveTo(0.25,0.25);
+    s.bezierCurveTo(0.25,0.25, 0.20,0, 0,0);
+    s.bezierCurveTo(-0.30,0, -0.30,0.35, -0.30,0.35);
+    s.bezierCurveTo(-0.30,0.55, -0.10,0.77, 0.25,0.95);
+    s.bezierCurveTo(0.60,0.77, 0.80,0.55, 0.80,0.35);
+    s.bezierCurveTo(0.80,0.35, 0.80,0, 0.50,0);
+    s.bezierCurveTo(0.35,0, 0.25,0.25, 0.25,0.25);
+    geo = new THREE.ExtrudeGeometry(s, {depth:0.06, bevelEnabled:false});
+    geo.center(); geo.rotateZ(Math.PI); geo.scale(0.22,0.22,0.22);
+  } else if (name === 'luna'){
+    const s = new THREE.Shape();
+    s.absarc(0, 0, 0.5, Math.PI*0.5 - 0.55, Math.PI*1.5 + 0.55, false);
+    s.absarc(0.42, 0, 0.48, Math.PI*1.5 + 0.4, Math.PI*0.5 - 0.4, true);
+    geo = new THREE.ExtrudeGeometry(s, {depth:0.12, bevelEnabled:false});
+    geo.center(); geo.scale(0.24,0.24,0.24);
+  } else { // stella
+    const s = new THREE.Shape();
+    for (let i=0;i<10;i++){
+      const r = i%2 ? 0.21 : 0.5;
+      const a = -Math.PI/2 + (i/10)*Math.PI*2;
+      i ? s.lineTo(Math.cos(a)*r, Math.sin(a)*r) : s.moveTo(Math.cos(a)*r, Math.sin(a)*r);
+    }
+    s.closePath();
+    geo = new THREE.ExtrudeGeometry(s, {depth:0.1, bevelEnabled:false});
+    geo.center(); geo.scale(0.26,0.26,0.26);
+    geo.rotateZ(Math.PI); // la punta in alto
+  }
+  const m = new THREE.Mesh(geo, goldMat);
+  m.castShadow = true;
+  return m;
+}
+
+function buildTree(type, topper){
+  // svuota l'albero precedente (le decorazioni restano in ornGroup)
+  for (const c of [...treeRoot.children]) if (c !== ornGroup) treeRoot.remove(c);
+  parts = []; anchors = []; rndSeed = 11;
+  const def = TREE_DEFS[type] || TREE_DEFS.classico;
+  if (type === 'abete') buildPineTree(def); else buildRoundTree(def);
+  topperNode = new THREE.Group();
+  topperNode.add(makeTopperMesh(topper));
+  topperNode.position.y = topMountY;
+  topperNode.scale.setScalar(0.001);
+  treeRoot.add(topperNode);
+  reg(topperNode, 0.68, 0.16);
+  // posizioni mondo dei ganci con l'albero cresciuto (coordinate treeRoot)
   applyGrowth(1, true);
   treeRoot.updateMatrixWorld(true);
   for (const an of anchors){
-    an.world = an.tilt.localToWorld(an.local.clone());
-    treeRoot.worldToLocal(an.world); // in coordinate treeRoot, così segue l'albero in AR
+    an.world = an.node.localToWorld(an.local.clone());
+    treeRoot.worldToLocal(an.world);
   }
 }
 
@@ -342,10 +468,8 @@ gift.add(box, lid, ribbon1, ribbon2);
 gift.visible = false;
 scene.add(gift);
 
-// ---------- ricordi / decorazioni ----------
-const memories = []; // {type,url,mesh,el?,label}
-const ornGroup = new THREE.Group();
-treeRoot.add(ornGroup);
+// ---------- decorazioni ----------
+const memories = [];
 const ringGeo = new THREE.TorusGeometry(0.085, 0.012, 8, 24);
 const discGeo = new THREE.CircleGeometry(0.082, 28);
 const stringGeo = new THREE.CylinderGeometry(0.004, 0.004, 1, 5);
@@ -359,42 +483,40 @@ function emojiTexture(emoji, bg){
   const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding;
   return t;
 }
-function circleCropTexture(imgOrCanvas){
+function circleCropTexture(src){
   const c = document.createElement('canvas'); c.width = c.height = 256;
   const x = c.getContext('2d');
-  const w = imgOrCanvas.videoWidth || imgOrCanvas.naturalWidth || imgOrCanvas.width;
-  const h = imgOrCanvas.videoHeight || imgOrCanvas.naturalHeight || imgOrCanvas.height;
+  const w = src.videoWidth || src.naturalWidth || src.width;
+  const h = src.videoHeight || src.naturalHeight || src.height;
   const s = Math.min(w,h);
   x.beginPath(); x.arc(128,128,128,0,7); x.clip();
-  x.drawImage(imgOrCanvas, (w-s)/2, (h-s)/2, s, s, 0, 0, 256, 256);
+  x.drawImage(src, (w-s)/2, (h-s)/2, s, s, 0, 0, 256, 256);
   const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding;
   return t;
 }
+const FALLBACK_TEX = {photo:['🖼️','#4a6b8c'], video:['🎬','#4a3b63'], audio:['🎵','#8c6d2f'], note:['💌','#9c4a4a']};
 
-let hangIndex = 0;
-function freeAnchor(){
-  if (hangIndex >= anchors.length) return null;
-  // alterna i palchi per distribuire bene
-  const order = [0,7,13,3,9,15,5,11,1,8,14,4,10,2,6,12];
-  const idx = order[hangIndex % order.length] % anchors.length;
-  hangIndex++;
-  let an = anchors[idx];
-  if (an.used) an = anchors.find(a=>!a.used);
-  if (!an) return null;
-  an.used = true;
-  return an;
+let hangCounter = 0;
+function pickAnchorIndex(){
+  if (!anchors.length) return -1;
+  const order = [0,7,13,3,9,14,5,11,1,8,12,4,10,2,6];
+  for (let k=0;k<anchors.length;k++){
+    const idx = order[(hangCounter + k) % order.length] % anchors.length;
+    if (!anchors[idx].used){ hangCounter++; return idx; }
+  }
+  return -1;
 }
-
-function hangMemory(mem, texture){
-  const an = freeAnchor();
-  if (!an){ botSay("L'albero è pieno! 🌟 Direi che è pronto per essere impacchettato."); return null; }
+function hangMemory(mem, texture, anchorIndex){
+  let idx = (anchorIndex == null || anchorIndex < 0) ? pickAnchorIndex() : anchorIndex % anchors.length;
+  if (idx < 0) return null;
+  const an = anchors[idx];
+  an.used = true;
+  mem.anchorIndex = idx;
   const g = new THREE.Group();
   g.position.copy(an.world);
-  // filo
   const str = new THREE.Mesh(stringGeo, goldMat);
   str.scale.y = 0.08; str.position.y = -0.04;
   g.add(str);
-  // medaglione (billboard)
   const med = new THREE.Group();
   med.position.y = -0.17;
   const ring = new THREE.Mesh(ringGeo, goldMat);
@@ -409,15 +531,10 @@ function hangMemory(mem, texture){
   g.userData.mem = mem;
   g.scale.setScalar(0.001);
   ornGroup.add(g);
-  mem.mesh = g;
-  mem.disc = disc;
-  // in modalità editor appare subito con un pop
-  mem.popT = 0;
-  chime();
+  mem.mesh = g; mem.disc = disc;
   return g;
 }
 
-// suono "campanellino" (WebAudio, dopo interazione utente)
 let actx;
 function chime(){
   try{
@@ -434,17 +551,17 @@ function chime(){
 
 // ---------- crescita ----------
 let growth = 1;
+let mode = 'editor';       // editor | wrapped | unwrapping | done
+let unwrapping = false;
 function applyGrowth(g, silent){
   growth = clamp01(g);
   const tk = ss(clamp01((growth - 0.02) / 0.42));
-  trunk.scale.set(0.3 + 0.7*tk, Math.max(tk, 0.001), 0.3 + 0.7*tk);
-  crown.scale.setScalar(Math.max(tk, 0.001));
-  crown.position.y = 0;
+  if (trunk){ trunk.scale.set(0.3 + 0.7*tk, Math.max(tk, 0.001), 0.3 + 0.7*tk); }
+  if (crown){ crown.scale.setScalar(Math.max(tk, 0.001)); }
   for (const p of parts){
     const k = ss(clamp01((growth - p.born) / p.span));
     p.node.scale.setScalar(Math.max(k, 0.001));
   }
-  // decorazioni: compaiono in sequenza dopo che l'albero è cresciuto
   const list = ornGroup.children;
   for (let i=0;i<list.length;i++){
     const born = 0.70 + (i/Math.max(list.length,1))*0.22;
@@ -453,11 +570,6 @@ function applyGrowth(g, silent){
     list[i].scale.setScalar(Math.max(k, 0.001));
   }
 }
-
-// ---------- stato / modalità ----------
-let mode = 'editor';       // editor | wrapped | unwrapping | done
-let unwrapping = false;
-let recipient = '', dedication = '';
 
 // ---------- loop ----------
 const clock = new THREE.Clock();
@@ -473,7 +585,6 @@ const camQ = new THREE.Quaternion(), parQ = new THREE.Quaternion();
 let unwrapT = -1;
 renderer.setAnimationLoop((t, frame) => {
   const dt = Math.min(clock.getDelta(), 0.1);
-  // pop delle decorazioni appese in editor
   for (const m of memories){
     if (m.popT != null && m.popT >= 0 && m.mesh && mode==='editor'){
       m.popT += dt*2.2;
@@ -483,23 +594,21 @@ renderer.setAnimationLoop((t, frame) => {
       if (k>=1){ m.mesh.scale.setScalar(1); m.popT = -1; }
     }
   }
-  // animazione di spacchettamento
   if (unwrapT >= 0){
     unwrapT += dt / (reducedMotion ? 0.01 : 7);
     applyGrowth(Math.min(unwrapT, 1));
     if (unwrapT >= 1){
       unwrapT = -1; unwrapping = false; mode = 'done';
-      showDedica();
+      if (!xrActive) showDedica();
     }
   }
-  // i medaglioni guardano sempre la camera
   camera.getWorldQuaternion(camQ);
   for (const g of ornGroup.children){
     const med = g.userData.med;
     med.parent.getWorldQuaternion(parQ);
     med.quaternion.copy(parQ.invert()).multiply(camQ);
   }
-  // pacco che "respira"
+  if (topperNode) topperNode.rotation.y += dt*0.5;
   if (gift.visible){
     gift.rotation.y += dt*0.6;
     gift.position.y = 0.03 + Math.sin(t*0.002)*0.02;
@@ -522,7 +631,7 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
-// ---------- tap sui ricordi ----------
+// ---------- tap ----------
 const ray = new THREE.Raycaster();
 const ptr = new THREE.Vector2();
 let downX=0, downY=0;
@@ -536,13 +645,10 @@ renderer.domElement.addEventListener('pointerup', e => {
   if (gift.visible) gift.traverse(o => { if (o.isMesh) meshes.push(o); });
   const hits = ray.intersectObjects(meshes);
   if (!hits.length) return;
-  // tap sul pacco?
-  let o = hits[0].object;
-  let inGift = false, node = o;
+  let node = hits[0].object, inGift = false;
   while (node){ if (node === gift){ inGift = true; break; } node = node.parent; }
   if (inGift && mode==='wrapped'){ startUnwrap(); return; }
-  // tap su una decorazione
-  node = o;
+  node = hits[0].object;
   while (node && !node.userData.mem) node = node.parent;
   if (node && node.userData.mem && node.scale.x > 0.5) openViewer(node.userData.mem);
 });
@@ -586,18 +692,20 @@ function showToast(msg, ms){
   toastTimer = setTimeout(() => toast.hidden = true, ms || 5000);
 }
 
-// ---------- chat editor ----------
+// ---------- chat ----------
 const msgs = document.getElementById('msgs');
 const inputRow = document.getElementById('inputRow');
 const textInput = document.getElementById('textInput');
 const sendBtn = document.getElementById('sendBtn');
 const btnRow = document.getElementById('btnRow');
 const chat = document.getElementById('chat');
+const esc = s => s.replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 
 function botSay(html){
   const d = document.createElement('div');
   d.className = 'msg bot'; d.innerHTML = html;
   msgs.appendChild(d); msgs.scrollTop = msgs.scrollHeight;
+  return d;
 }
 function meSay(text, thumbUrl){
   const d = document.createElement('div');
@@ -635,6 +743,11 @@ function showButtons(defs){
   btnRow.hidden = false;
 }
 
+// ---------- stato regalo ----------
+let recipient = '', dedication = '', treeType = 'classico', topper = 'stella';
+let treeId = null;   // uuid: esiste solo in modalità online
+let receiverMode = false;
+
 const fileMedia = document.getElementById('fileMedia');
 const fileAudio = document.getElementById('fileAudio');
 
@@ -647,7 +760,6 @@ function decorateButtons(){
   ]);
 }
 
-const esc = s => s.replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 function startChat(){
   botSay("Ciao! 🌳 Costruiamo insieme un regalo: un albero decorato con i vostri ricordi.<br>Per chi è?");
   askText("Il nome della persona…", v => {
@@ -657,89 +769,160 @@ function startChat(){
     askText("La tua dedica…", d => {
       dedication = d;
       meSay(d);
-      botSay("Perfetto. Ora decoriamo l'albero: carica <b>foto</b>, <b>video</b>, <b>messaggi vocali</b> o scrivi <b>bigliettini</b>. Ogni ricordo diventa una decorazione appesa ai rami — toccala per rivederla.");
-      decorateButtons();
+      botSay("Che albero regaliamo?");
+      showButtons(Object.entries(TREE_DEFS).map(([key, def]) =>
+        [def.label, key===treeType?'primary':'', () => {
+          treeType = key; meSay(def.label);
+          buildTree(treeType, topper);
+          botSay("E in cima, che puntale mettiamo?");
+          showButtons(Object.entries(TOPPER_DEFS).map(([tk, tl]) =>
+            [tl, tk===topper?'primary':'', async () => {
+              topper = tk; meSay(tl);
+              buildTree(treeType, topper);
+              if (ONLINE){
+                const wait = botSay("Preparo l'albero… ⏳");
+                try{
+                  treeId = await rpc('create_gift_tree', {
+                    p_recipient: recipient, p_dedication: dedication,
+                    p_tree_type: treeType, p_topper: topper
+                  });
+                  wait.innerHTML = "Albero pronto e <b>salvato online</b> ✓";
+                }catch(e){
+                  wait.innerHTML = "Non riesco a salvare online (" + esc(e.message) + "): continuo in locale.";
+                }
+              } else {
+                botSay("⚠️ Qui dentro claude.ai il salvataggio è bloccato: <b>modalità locale</b>. Per creare un regalo condivisibile apri la versione standalone.");
+              }
+              botSay("Ora decoriamolo: carica <b>foto</b>, <b>video</b>, <b>messaggi vocali</b> o scrivi <b>bigliettini</b>. Ogni ricordo diventa una decorazione — toccala per rivederla.");
+              decorateButtons();
+            }]
+          ));
+        }]
+      ));
     });
   });
 }
 
 fileMedia.addEventListener('change', async () => {
-  for (const f of fileMedia.files){
+  const files = [...fileMedia.files];
+  fileMedia.value = '';
+  for (const f of files){
     if (f.type.startsWith('image/')) await addPhoto(f);
     else if (f.type.startsWith('video/')) await addVideo(f);
   }
-  fileMedia.value = '';
 });
 fileAudio.addEventListener('change', () => {
-  for (const f of fileAudio.files) addAudio(f);
+  const files = [...fileAudio.files];
   fileAudio.value = '';
+  for (const f of files) addAudio(f);
 });
 
-function loadImage(url){
+function loadImage(url, cors){
   return new Promise((res, rej) => {
     const img = new Image();
+    if (cors) img.crossOrigin = 'anonymous';
     img.onload = () => res(img);
     img.onerror = rej;
     img.src = url;
   });
 }
+async function compressImage(file){
+  try{
+    const img = await loadImage(URL.createObjectURL(file));
+    const s = Math.min(1, 1280/Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth*s); c.height = Math.round(img.naturalHeight*s);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+    return blob || file;
+  }catch(e){ return file; }
+}
+function videoThumb(url, cors){
+  return new Promise((res, rej) => {
+    const v = document.createElement('video');
+    if (cors) v.crossOrigin = 'anonymous';
+    v.muted = true; v.playsInline = true; v.preload = 'metadata';
+    v.src = url;
+    v.onloadeddata = () => { v.currentTime = Math.min(0.5, (v.duration||1)/3); };
+    v.onseeked = () => { try{ res(circleCropTexture(v)); }catch(e){ rej(e); } };
+    v.onerror = rej;
+    setTimeout(() => rej(new Error('timeout')), 8000);
+  });
+}
+
+async function saveOrnament(mem, file, blobOverride, ext){
+  if (!ONLINE || !treeId) return; // modalità locale
+  const note = botSay("Salvo " + esc(mem.label) + "… ⏳");
+  try{
+    let path = null;
+    if (mem.type !== 'note'){
+      path = await uploadMedia(treeId, blobOverride || file, ext);
+      mem.mediaPath = path;
+    }
+    await rpc('add_gift_ornament', {
+      p_tree_id: treeId, p_kind: mem.type,
+      p_note_text: mem.type==='note' ? mem.text : null,
+      p_media_path: path, p_anchor_index: mem.anchorIndex
+    });
+    note.innerHTML = "Salvato ✓";
+  }catch(e){
+    note.innerHTML = "⚠️ Non sono riuscito a salvare " + esc(mem.label) + " (" + esc(e.message) + ").";
+  }
+}
+
 async function addPhoto(f){
   const url = URL.createObjectURL(f);
   try{
     const img = await loadImage(url);
     const tex = circleCropTexture(img);
     const mem = {type:'photo', url, label:f.name};
-    if (!hangMemory(mem, tex)) return;
-    memories.push(mem);
+    if (!hangMemory(mem, tex)){ treeFull(); return; }
+    memories.push(mem); mem.popT = 0; chime();
     meSay('📷 ' + f.name, url);
-    botSay("Appesa! ✨");
+    const blob = await compressImage(f);
+    await saveOrnament(mem, f, blob, 'jpg');
   }catch(e){ showToast("Non riesco a leggere questa immagine."); }
 }
 async function addVideo(f){
   const url = URL.createObjectURL(f);
   const mem = {type:'video', url, label:f.name};
   let tex;
-  try{
-    tex = await new Promise((res, rej) => {
-      const v = document.createElement('video');
-      v.muted = true; v.playsInline = true; v.preload = 'metadata';
-      v.src = url;
-      v.onloadeddata = () => { v.currentTime = Math.min(0.5, (v.duration||1)/3); };
-      v.onseeked = () => { try{ res(circleCropTexture(v)); }catch(e){ rej(e); } };
-      v.onerror = rej;
-      setTimeout(() => rej(new Error('timeout')), 6000);
-    });
-  }catch(e){
-    tex = emojiTexture('🎬', '#4a3b63');
-  }
-  if (!hangMemory(mem, tex)) return;
-  memories.push(mem);
+  try{ tex = await videoThumb(url); }
+  catch(e){ tex = emojiTexture(...FALLBACK_TEX.video); }
+  if (!hangMemory(mem, tex)){ treeFull(); return; }
+  memories.push(mem); mem.popT = 0; chime();
   meSay('🎬 ' + f.name);
-  botSay("Video appeso! Toccalo per guardarlo. ✨");
+  const ext = (f.name.split('.').pop() || 'mp4').toLowerCase();
+  await saveOrnament(mem, f, null, ext);
 }
-function addAudio(f){
+async function addAudio(f){
   const url = URL.createObjectURL(f);
   const mem = {type:'audio', url, label:f.name};
-  if (!hangMemory(mem, emojiTexture('🎵', '#8c6d2f'))) return;
-  memories.push(mem);
+  if (!hangMemory(mem, emojiTexture(...FALLBACK_TEX.audio))){ treeFull(); return; }
+  memories.push(mem); mem.popT = 0; chime();
   meSay('🎙️ ' + f.name);
-  botSay("Voce appesa all'albero. Toccala per ascoltarla. ✨");
+  const ext = (f.name.split('.').pop() || 'm4a').toLowerCase();
+  await saveOrnament(mem, f, null, ext);
 }
 function addNote(){
-  askText("Scrivi il bigliettino…", txt => {
+  askText("Scrivi il bigliettino…", async txt => {
     meSay('💌 ' + txt);
     const mem = {type:'note', text:txt, label:'bigliettino'};
-    if (hangMemory(mem, emojiTexture('💌', '#9c4a4a'))){
-      memories.push(mem);
-      botSay("Bigliettino appeso. ✨");
-    }
+    if (hangMemory(mem, emojiTexture(...FALLBACK_TEX.note))){
+      memories.push(mem); mem.popT = 0; chime();
+      await saveOrnament(mem);
+    } else treeFull();
     decorateButtons();
   });
 }
+function treeFull(){ botSay("L'albero è pieno! 🌟 Direi che è pronto per essere impacchettato."); }
 
-// ---------- impacchetta / spacchetta ----------
+// ---------- impacchetta / spacchetta / condividi ----------
 const unwrapHint = document.getElementById('unwrapHint');
 const unwrapBar = document.getElementById('unwrapBar');
+const unwrapBtns = document.getElementById('unwrapBtns');
+const sharePanel = document.getElementById('sharePanel');
+const shareUrl = document.getElementById('shareUrl');
 const dedicaEl = document.getElementById('dedica');
 const subTitle = document.getElementById('subTitle');
 
@@ -754,7 +937,8 @@ function wrapGift(){
   for (const g of ornGroup.children) g.userData.rung = false;
   gift.visible = true;
   controls.autoRotate = true;
-  subTitle.textContent = "Così lo vedrà " + recipient + ".";
+  subTitle.textContent = receiverMode ? "Qualcuno ha pensato a te." : ("Così lo vedrà " + recipient + ".");
+  unwrapBar.hidden = true;
   unwrapHint.hidden = false;
 }
 function startUnwrap(){
@@ -769,16 +953,45 @@ function showDedica(){
   document.getElementById('dedicaText').textContent = "“" + dedication + "”";
   dedicaEl.hidden = false;
 }
+function buildBar(){
+  unwrapBtns.innerHTML = '';
+  const mk = (label, cls, fn) => {
+    const b = document.createElement('button');
+    b.textContent = label; if (cls) b.className = cls; b.onclick = fn;
+    unwrapBtns.appendChild(b);
+  };
+  mk('↺ Rivedi', '', () => wrapGift());
+  mk('📷 Vedi in AR', '', arAction);
+  if (!receiverMode){
+    mk('✏️ Torna all\'editor', '', backToEditor);
+  } else {
+    const a = document.createElement('a');
+    a.href = STANDALONE_URL; a.textContent = '🌱 Crea il tuo albero';
+    a.style.cssText = 'align-self:center;font-weight:600;color:var(--gold);';
+    unwrapBtns.appendChild(a);
+  }
+  // link regalo
+  if (!receiverMode && ONLINE && treeId){
+    shareUrl.value = STANDALONE_URL + '?t=' + treeId;
+    sharePanel.hidden = false;
+  } else sharePanel.hidden = true;
+}
 document.getElementById('dedicaClose').onclick = () => {
   dedicaEl.hidden = true;
+  buildBar();
   unwrapBar.hidden = false;
   subTitle.textContent = "Tocca le decorazioni per rivivere i ricordi.";
 };
-document.getElementById('replayBtn').onclick = () => {
-  unwrapBar.hidden = true;
-  wrapGift();
+document.getElementById('copyBtn').onclick = async () => {
+  try{
+    await navigator.clipboard.writeText(shareUrl.value);
+    showToast("Link copiato! 💛 Invialo a " + recipient + ".");
+  }catch(e){
+    shareUrl.select();
+    showToast("Copia il link selezionato (Ctrl/Cmd+C).");
+  }
 };
-document.getElementById('editBtn').onclick = () => {
+function backToEditor(){
   mode = 'editor';
   unwrapBar.hidden = true;
   applyGrowth(1, true);
@@ -787,8 +1000,7 @@ document.getElementById('editBtn').onclick = () => {
   subTitle.textContent = "Un regalo da decorare con foto, voci e parole.";
   botSay("Rieccoci! Aggiungi altri ricordi o impacchetta di nuovo.");
   decorateButtons();
-};
-document.getElementById('restartBtn').onclick = () => location.reload();
+}
 
 // ---------- AR ----------
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
@@ -841,11 +1053,13 @@ async function startWebXR(){
     xrOverlay.hidden = true; reticle.visible = false;
     ground.visible = true; treeRoot.visible = true;
     treeRoot.position.set(0,0,0);
+    applyGrowth(1, true);
+    for (const g of ornGroup.children) g.scale.setScalar(1);
     renderer.setSize(innerWidth, innerHeight);
   });
   document.getElementById('xrExit').onclick = () => session.end();
 }
-document.getElementById('arBtn2').onclick = async () => {
+async function arAction(){
   if (embedded){
     showToast("Dentro claude.ai la fotocamera è bloccata. L'AR funziona nella versione standalone: " + STANDALONE_URL, 9000);
     return;
@@ -856,12 +1070,59 @@ document.getElementById('arBtn2').onclick = async () => {
   }
   if (isIOS){ await startQuickLook(); return; }
   showToast("Apri questa pagina da smartphone per l'AR (Safari su iPhone, Chrome su Android).");
-};
+}
+
+// ---------- modalità destinatario ----------
+async function startReceiver(id){
+  receiverMode = true;
+  chat.hidden = true;
+  document.getElementById('loadingCard').hidden = false;
+  try{
+    const data = await rpc('get_gift_tree', {p_tree_id: id});
+    if (!data) throw new Error("regalo non trovato");
+    recipient = data.recipient; dedication = data.dedication;
+    treeType = data.tree_type; topper = data.topper;
+    buildTree(treeType, topper);
+    document.querySelector('h1').textContent = "Un regalo per " + recipient;
+    for (const o of data.ornaments){
+      const mem = {type:o.kind, label:o.kind, text:o.note_text || '',
+                   url: o.media_path ? mediaUrl(o.media_path) : null};
+      const ph = emojiTexture(...FALLBACK_TEX[o.kind] || FALLBACK_TEX.note);
+      if (!hangMemory(mem, ph, o.anchor_index)) continue;
+      memories.push(mem);
+      // carica le anteprime vere in background
+      if (o.kind === 'photo' && mem.url){
+        loadImage(mem.url, true).then(img => {
+          mem.disc.material.map = circleCropTexture(img);
+          mem.disc.material.needsUpdate = true;
+        }).catch(()=>{});
+      } else if (o.kind === 'video' && mem.url){
+        videoThumb(mem.url, true).then(tex => {
+          mem.disc.material.map = tex;
+          mem.disc.material.needsUpdate = true;
+        }).catch(()=>{});
+      }
+    }
+    document.getElementById('loadingCard').hidden = true;
+    wrapGift();
+  }catch(e){
+    document.getElementById('loadingCard').hidden = true;
+    subTitle.textContent = "Questo regalo non esiste (o il link è sbagliato).";
+    showToast("Non trovo questo regalo: " + e.message, 8000);
+    buildTree('classico','stella');
+    applyGrowth(1, true);
+  }
+}
 
 // ---------- avvio ----------
-computeAnchors();
+buildTree(treeType, topper);
 applyGrowth(1, true);
-startChat();
+const giftParam = new URLSearchParams(location.search).get('t');
+if (giftParam && ONLINE){
+  startReceiver(giftParam);
+} else {
+  startChat();
+}
 })();
 </script>
 
