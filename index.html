@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="it">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Albero di Cacao AR</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&display=swap">
+<style>
+  /* Layout: full-viewport 3D stage, floating header, bottom control card */
+  :root{
+    --bg:#eef0e6;         /* canopy-filtered light */
+    --bg2:#dce4cf;
+    --fg:#28311f;
+    --muted:#5c6a4c;
+    --card:#fffdf6;
+    --line:#cdd5bb;
+    --accent:#c4651f;     /* cacao pod orange */
+    --accent-fg:#ffffff;
+    --chip:#e7ecd9;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#141a10; --bg2:#1d2616; --fg:#e8ecdc; --muted:#a8b394;
+      --card:#1f271a; --line:#36422a; --accent:#e08a3c; --accent-fg:#1c1206;
+      --chip:#2a3420; color-scheme:dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#141a10; --bg2:#1d2616; --fg:#e8ecdc; --muted:#a8b394;
+    --card:#1f271a; --line:#36422a; --accent:#e08a3c; --accent-fg:#1c1206;
+    --chip:#2a3420; color-scheme:dark;
+  }
+  [hidden]{display:none!important}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font:15px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
+    overflow:hidden;
+  }
+  #stage{
+    position:fixed; inset:0;
+    background:linear-gradient(180deg, var(--bg) 0%, var(--bg2) 100%);
+  }
+  #stage canvas{display:block; touch-action:none}
+
+  header{
+    position:fixed; left:0; right:0; top:0;
+    padding:calc(14px + env(safe-area-inset-top,0px)) 20px 10px;
+    pointer-events:none; display:flex; flex-direction:column; gap:4px;
+  }
+  h1{
+    margin:0; font-family:"Fraunces", Georgia, serif; font-weight:700;
+    font-size:clamp(22px,4.5vw,30px); letter-spacing:.2px; text-wrap:balance;
+  }
+  h1 em{font-style:italic; font-weight:500; color:var(--muted)}
+  .sub{margin:0; color:var(--muted); font-size:13px; max-width:46ch}
+
+  #panel{
+    position:fixed; left:50%; transform:translateX(-50%);
+    bottom:calc(14px + env(safe-area-inset-bottom,0px));
+    width:min(440px, calc(100% - 32px));
+    background:var(--card); border:1px solid var(--line); border-radius:16px;
+    box-shadow:0 10px 30px rgba(20,25,10,.18);
+    padding:14px 16px; display:flex; flex-direction:column; gap:10px;
+  }
+  #stage-row{display:flex; align-items:center; justify-content:space-between; gap:8px}
+  #stageChip{
+    background:var(--chip); border-radius:999px; padding:4px 12px;
+    font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  #years{font-variant-numeric:tabular-nums; color:var(--muted); font-size:13px; white-space:nowrap}
+  #grow-row{display:flex; align-items:center; gap:10px}
+  button{
+    border:1px solid var(--line); background:var(--chip); color:var(--fg);
+    border-radius:10px; font:inherit; font-weight:600; cursor:pointer;
+    padding:8px 12px;
+  }
+  button:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+  #playBtn{min-width:44px}
+  input[type=range]{flex:1; accent-color:var(--accent); min-width:0}
+  #arBtn{
+    background:var(--accent); color:var(--accent-fg); border:1px solid transparent;
+    padding:12px; border-radius:12px; font-size:16px; width:100%;
+    display:block; text-align:center; text-decoration:none; box-sizing:border-box;
+    font-weight:600; cursor:pointer;
+  }
+  .hint{margin:0; font-size:12px; color:var(--muted); text-align:center}
+
+  /* Toast */
+  #toast{
+    position:fixed; left:50%; transform:translateX(-50%);
+    bottom:calc(140px + env(safe-area-inset-bottom,0px));
+    background:var(--fg); color:var(--bg); padding:10px 16px; border-radius:10px;
+    font-size:13px; max-width:min(420px, calc(100% - 48px));
+    box-shadow:0 6px 20px rgba(0,0,0,.25); z-index:30; text-align:center;
+  }
+
+  /* QR modal */
+  #qrModal{
+    position:fixed; inset:0; z-index:40; display:flex; align-items:center; justify-content:center;
+    background:rgba(10,14,6,.55); padding:16px;
+  }
+  #qrModal .box{
+    background:var(--card); border:1px solid var(--line); border-radius:16px;
+    padding:22px; max-width:340px; text-align:center;
+    display:flex; flex-direction:column; gap:12px; align-items:center;
+  }
+  #qrBox{background:#fff; padding:10px; border-radius:10px; line-height:0}
+  #qrModal h2{margin:0; font-family:"Fraunces", Georgia, serif; font-size:20px}
+  #qrModal p{margin:0; font-size:13px; color:var(--muted)}
+
+  /* WebXR dom-overlay */
+  #xrOverlay{
+    position:fixed; inset:0; display:flex; flex-direction:column;
+    justify-content:space-between; align-items:center; pointer-events:none;
+    padding:calc(16px + env(safe-area-inset-top,0px)) 16px calc(24px + env(safe-area-inset-bottom,0px));
+  }
+  #xrHint{
+    background:rgba(20,25,10,.65); color:#fff; border-radius:999px;
+    padding:8px 16px; font-size:14px; text-align:center;
+  }
+  #xrExit{pointer-events:auto; background:rgba(20,25,10,.75); color:#fff; border:none}
+
+  @media (prefers-reduced-motion: reduce){ *{scroll-behavior:auto} }
+</style>
+
+<div id="stage"></div>
+
+<header>
+  <h1>Albero di cacao <em>· Theobroma cacao</em></h1>
+  <p class="sub">Trascina per ruotare. Fiori e cabosse spuntano direttamente sul tronco: si chiama caulifloria.</p>
+</header>
+
+<div id="panel">
+  <div id="stage-row">
+    <span id="stageChip">🌱 Seme</span>
+    <span id="years">anno 0,0 / 5</span>
+  </div>
+  <div id="grow-row">
+    <button id="playBtn" aria-label="Avvia crescita">▶</button>
+    <input id="growth" type="range" min="0" max="1000" value="0" aria-label="Crescita">
+  </div>
+  <button id="arBtn">📷 &nbsp;Vedi in AR nel tuo ambiente</button>
+  <p class="hint" id="arHint">Su iPhone apre Quick Look, su Android la fotocamera (WebXR).</p>
+</div>
+
+<div id="toast" hidden></div>
+
+<div id="qrModal" hidden>
+  <div class="box">
+    <h2>Apri dal telefono</h2>
+    <p>Inquadra il codice con la fotocamera del cellulare: si apre questa stessa demo, e lì il bottone AR posiziona l'albero nel tuo ambiente.</p>
+    <div id="qrBox"></div>
+    <button id="qrClose">Chiudi</button>
+  </div>
+</div>
+
+<div id="xrOverlay" hidden>
+  <button id="xrExit">✕ Esci dall'AR</button>
+  <div id="xrHint">Muovi il telefono per trovare il pavimento, poi tocca per piantare l'albero</div>
+</div>
+
+<a id="arLink" rel="ar" href="#" style="position:absolute;left:-9999px" aria-hidden="true"><img alt="" width="1" height="1"></a>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/libs/fflate.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/exporters/USDZExporter.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+(function(){
+'use strict';
+const STANDALONE_URL = "https://tommasosperoni-tech.github.io/cacao-ar-demo/";
+const SHARE_URL = STANDALONE_URL; // il QR porta alla versione standalone, senza login né sandbox
+// dentro il viewer di claude.ai la pagina gira in un iframe sandbox che blocca fotocamera e AR
+const embedded = (() => { try { return window.self !== window.top; } catch(e){ return true; } })();
+
+// ---------- scena ----------
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.05, 60);
+camera.position.set(2.4, 1.8, 3.1);
+
+const hemi = new THREE.HemisphereLight(0xdfeedd, 0x4a3b28, 0.9);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff2dd, 1.6);
+sun.position.set(3.5, 6, 2.5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024,1024);
+sun.shadow.camera.left=-3; sun.shadow.camera.right=3;
+sun.shadow.camera.top=3; sun.shadow.camera.bottom=-3;
+scene.add(sun);
+
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.0, 0);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI*0.52;
+controls.minDistance = 1.2; controls.maxDistance = 9;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.7;
+controls.addEventListener('start', ()=> controls.autoRotate = false);
+
+// terreno (solo in anteprima, non in AR / export)
+const ground = new THREE.Mesh(
+  new THREE.CylinderGeometry(1.5, 1.6, 0.06, 40),
+  new THREE.MeshStandardMaterial({color:0x6b5637, roughness:1})
+);
+ground.position.y = -0.03;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------- albero procedurale ----------
+const TRUNK_H = 1.5;
+const treeRoot = new THREE.Group();
+scene.add(treeRoot);
+const parts = []; // {node, born, span, mat?, c0?, c1?}
+function reg(node, born, span, extra){ parts.push(Object.assign({node, born, span}, extra||{})); }
+const clamp01 = v => Math.max(0, Math.min(1, v));
+const ss = k => k*k*(3-2*k);
+let rndSeed = 7;
+const rnd = () => (rndSeed = (rndSeed*16807) % 2147483647) / 2147483647;
+
+const trunkMat  = new THREE.MeshStandardMaterial({color:0x6e4c2e, roughness:0.95});
+const branchMat = new THREE.MeshStandardMaterial({color:0x7a5736, roughness:0.95});
+const YOUNG_LEAF = new THREE.Color(0xa0603c);  // le foglie giovani del cacao sono bronzo-rossastre
+const OLD_LEAF   = new THREE.Color(0x3c6b2a);
+const POD_GREEN  = new THREE.Color(0x7d9b3c);
+const POD_RIPE   = [0xe0a62d, 0xcf7a2e, 0xa84a2a].map(c=>new THREE.Color(c));
+
+function cyl(len, r0, r1){
+  const g = new THREE.CylinderGeometry(r1, r0, len, 7);
+  g.translate(0, len/2, 0);
+  return g;
+}
+// seme
+const seed = new THREE.Mesh(new THREE.SphereGeometry(0.035, 10, 8),
+  new THREE.MeshStandardMaterial({color:0x4e3420, roughness:0.8}));
+seed.position.y = 0.02; seed.castShadow = true;
+treeRoot.add(seed);
+
+// tronco (pivot alla base)
+const trunk = new THREE.Mesh(cyl(TRUNK_H, 0.085, 0.055), trunkMat);
+trunk.castShadow = true;
+treeRoot.add(trunk);
+
+// la chioma segue la cima del tronco
+const crown = new THREE.Group();
+treeRoot.add(crown);
+
+const leafGeo = new THREE.SphereGeometry(0.5, 8, 6);
+function addLeaf(parent, pos, born){
+  const pivot = new THREE.Group();
+  pivot.position.copy(pos);
+  pivot.rotation.y = rnd()*Math.PI*2;
+  pivot.rotation.z = -(0.5 + rnd()*0.8); // le foglie di cacao pendono verso il basso
+  const mat = new THREE.MeshStandardMaterial({color:OLD_LEAF.clone(), roughness:0.7});
+  const m = new THREE.Mesh(leafGeo, mat);
+  m.scale.set(0.34, 0.03, 0.125);
+  m.position.x = 0.16;
+  m.castShadow = true;
+  pivot.add(m);
+  pivot.scale.setScalar(0.001);
+  parent.add(pivot);
+  reg(pivot, born, 0.18, {mat, c0:YOUNG_LEAF, c1:OLD_LEAF});
+}
+function addBranch(parent, origin, rotY, tiltZ, len, rad, born){
+  const pivot = new THREE.Group(); pivot.position.copy(origin); pivot.rotation.y = rotY;
+  const tilt = new THREE.Group(); tilt.rotation.z = tiltZ;
+  pivot.add(tilt); parent.add(pivot);
+  const m = new THREE.Mesh(cyl(len, rad, rad*0.6), branchMat);
+  m.castShadow = true; tilt.add(m);
+  tilt.scale.setScalar(0.001);
+  reg(tilt, born, 0.22);
+  return tilt;
+}
+
+// foglie da piantina (sulla cima del fusto giovane)
+for (let i=0;i<4;i++) addLeaf(crown, new THREE.Vector3(0, -0.04*i, 0), 0.10 + i*0.03);
+
+// jorquette: il verticillo di 5 rami che il cacao forma in cima al fusto giovanile
+for (let i=0;i<5;i++){
+  const a = (i/5)*Math.PI*2 + rnd()*0.4;
+  const tilt = 1.05 + rnd()*0.25;
+  const len = 0.95 + rnd()*0.3;
+  const b = addBranch(crown, new THREE.Vector3(0,-0.02,0), a, tilt, len, 0.032, 0.34 + i*0.025);
+  // foglie lungo il ramo
+  for (let j=1;j<=4;j++){
+    addLeaf(b, new THREE.Vector3(0, len*(0.3+0.17*j), 0), 0.42 + j*0.05 + i*0.015);
+  }
+  // rametti secondari
+  for (let s=0;s<2;s++){
+    const sb = addBranch(b, new THREE.Vector3(0, len*(0.45+0.3*s), 0),
+                         rnd()*Math.PI*2, 0.7+rnd()*0.4, len*0.45, 0.018, 0.5 + s*0.06 + i*0.02);
+    for (let j=1;j<=3;j++){
+      addLeaf(sb, new THREE.Vector3(0, len*0.45*(0.3+0.22*j), 0), 0.56 + j*0.05 + i*0.01);
+    }
+  }
+}
+
+// fiori minuscoli bianchi, direttamente sul tronco (caulifloria)
+const flowerMat = new THREE.MeshStandardMaterial({color:0xf3e6e2, roughness:0.5});
+const flowerGeo = new THREE.SphereGeometry(0.015, 6, 5);
+for (let i=0;i<16;i++){
+  const a = rnd()*Math.PI*2, y = 0.3 + rnd()*1.0;
+  const f = new THREE.Mesh(flowerGeo, flowerMat);
+  f.position.set(Math.cos(a)*0.075, y, Math.sin(a)*0.075);
+  f.scale.setScalar(0.001);
+  treeRoot.add(f);
+  reg(f, 0.56 + rnd()*0.08, 0.08);
+}
+
+// cabosse sul tronco
+for (let i=0;i<7;i++){
+  const a = rnd()*Math.PI*2, y = 0.35 + rnd()*0.95;
+  const pivot = new THREE.Group();
+  pivot.position.set(Math.cos(a)*0.07, y, Math.sin(a)*0.07);
+  pivot.rotation.y = -a;
+  const mat = new THREE.MeshStandardMaterial({color:POD_GREEN.clone(), roughness:0.55});
+  const pod = new THREE.Mesh(new THREE.SphereGeometry(0.5, 10, 12), mat);
+  pod.scale.set(0.105 + rnd()*0.03, 0.19 + rnd()*0.05, 0.105 + rnd()*0.03);
+  pod.position.set(0.06, -0.07, 0);
+  pod.castShadow = true;
+  pivot.add(pod);
+  pivot.scale.setScalar(0.001);
+  treeRoot.add(pivot);
+  reg(pivot, 0.66 + i*0.035, 0.2, {mat, c0:POD_GREEN, c1:POD_RIPE[i % POD_RIPE.length]});
+}
+
+// ---------- crescita ----------
+let growth = 0, playing = false, usdzDirty = true;
+const slider = document.getElementById('growth');
+const playBtn = document.getElementById('playBtn');
+const stageChip = document.getElementById('stageChip');
+const yearsEl = document.getElementById('years');
+
+const STAGES = [
+  [0.08, "🫘 Seme"],
+  [0.20, "🌱 Germinazione"],
+  [0.38, "🌿 Piantina"],
+  [0.58, "🌳 Jorquette · albero giovane"],
+  [0.72, "🌸 Fioritura sul tronco"],
+  [1.01, "🍈 Cabosse mature"]
+];
+
+function applyGrowth(g){
+  growth = clamp01(g);
+  const tk = ss(clamp01((growth - 0.02) / 0.5));
+  trunk.scale.set(0.3 + 0.7*tk, Math.max(tk, 0.001), 0.3 + 0.7*tk);
+  crown.position.y = TRUNK_H * Math.max(tk, 0.02);
+  seed.visible = growth < 0.25;
+  for (const p of parts){
+    const k = ss(clamp01((growth - p.born) / p.span));
+    p.node.scale.setScalar(Math.max(k, 0.001));
+    if (p.mat) p.mat.color.lerpColors(p.c0, p.c1, k);
+  }
+  slider.value = Math.round(growth*1000);
+  const st = STAGES.find(s => growth < s[0]) || STAGES[STAGES.length-1];
+  stageChip.textContent = st[1];
+  yearsEl.textContent = "anno " + (growth*5).toFixed(1).replace('.', ',') + " / 5";
+  usdzDirty = true;
+}
+slider.addEventListener('input', () => { playing = false; playBtn.textContent = '▶'; applyGrowth(slider.value/1000); });
+playBtn.addEventListener('click', () => {
+  if (!playing && growth >= 0.999) applyGrowth(0);
+  playing = !playing;
+  playBtn.textContent = playing ? '⏸' : '▶';
+});
+
+// ---------- loop ----------
+const clock = new THREE.Clock();
+let hitTestSource = null, xrActive = false, xrPlaced = false;
+const reticle = new THREE.Mesh(
+  new THREE.RingGeometry(0.11, 0.14, 32).rotateX(-Math.PI/2),
+  new THREE.MeshBasicMaterial({color:0xffffff})
+);
+reticle.matrixAutoUpdate = false; reticle.visible = false;
+scene.add(reticle);
+
+renderer.setAnimationLoop((t, frame) => {
+  const dt = Math.min(clock.getDelta(), 0.1);
+  if (playing){
+    applyGrowth(growth + dt/9);
+    if (growth >= 1){ playing = false; playBtn.textContent = '▶'; }
+  }
+  if (xrActive && frame && hitTestSource){
+    const hits = frame.getHitTestResults(hitTestSource);
+    if (hits.length){
+      const pose = hits[0].getPose(renderer.xr.getReferenceSpace());
+      reticle.visible = true;
+      reticle.matrix.fromArray(pose.transform.matrix);
+    } else reticle.visible = false;
+  }
+  if (!xrActive) controls.update();
+  renderer.render(scene, camera);
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------- toast ----------
+const toast = document.getElementById('toast');
+let toastTimer;
+function showToast(msg, ms){
+  toast.textContent = msg; toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.hidden = true, ms || 5000);
+}
+
+// ---------- AR ----------
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+              (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+let xrSupported = false;
+if (navigator.xr && navigator.xr.isSessionSupported){
+  navigator.xr.isSessionSupported('immersive-ar').then(ok => { xrSupported = ok; }).catch(()=>{});
+}
+
+// esporta l'albero allo stadio attuale (senza terreno, senza parti a scala ~0)
+function exportSnapshot(){
+  const g = treeRoot.clone(true);
+  const dead = [];
+  g.traverse(o => { if (o !== g && o.scale.x < 0.01 && o.scale.y < 0.01) dead.push(o); });
+  dead.forEach(o => o.parent && o.parent.remove(o));
+  g.updateMatrixWorld(true);
+  return g;
+}
+
+let usdzUrl = null;
+async function ensureUSDZ(){
+  if (!usdzDirty && usdzUrl) return usdzUrl;
+  const exporter = new THREE.USDZExporter();
+  const data = await exporter.parse(exportSnapshot());
+  if (usdzUrl) URL.revokeObjectURL(usdzUrl);
+  usdzUrl = URL.createObjectURL(new Blob([data], {type:'model/vnd.usdz+zip'}));
+  usdzDirty = false;
+  return usdzUrl;
+}
+
+async function startQuickLook(){
+  try{
+    const url = await ensureUSDZ();
+    const a = document.getElementById('arLink');
+    a.href = url;
+    a.click();
+  }catch(e){
+    showToast("Non sono riuscito a generare il modello AR: " + e.message);
+  }
+}
+
+const xrOverlay = document.getElementById('xrOverlay');
+async function startWebXR(){
+  const session = await navigator.xr.requestSession('immersive-ar', {
+    requiredFeatures: ['hit-test'],
+    optionalFeatures: ['dom-overlay'],
+    domOverlay: { root: xrOverlay }
+  });
+  xrOverlay.hidden = false;
+  renderer.xr.enabled = true;
+  renderer.xr.setReferenceSpaceType('local');
+  await renderer.xr.setSession(session);
+  const viewerSpace = await session.requestReferenceSpace('viewer');
+  hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
+  xrActive = true; xrPlaced = false;
+  ground.visible = false;
+  treeRoot.visible = false;
+
+  session.addEventListener('select', () => {
+    if (!reticle.visible) return;
+    treeRoot.position.setFromMatrixPosition(reticle.matrix);
+    treeRoot.visible = true;
+    if (!xrPlaced){
+      xrPlaced = true;
+      applyGrowth(0); playing = true;   // l'albero cresce davanti a te
+      document.getElementById('xrHint').textContent = "Tocca altrove per spostarlo · guarda i 5 anni di crescita";
+    }
+  });
+  session.addEventListener('end', () => {
+    xrActive = false; hitTestSource = null;
+    renderer.xr.enabled = false;
+    xrOverlay.hidden = true;
+    reticle.visible = false;
+    ground.visible = true;
+    treeRoot.visible = true;
+    treeRoot.position.set(0,0,0);
+    renderer.setSize(innerWidth, innerHeight);
+  });
+  document.getElementById('xrExit').onclick = () => session.end();
+}
+
+// QR per aprire dal telefono
+const qrModal = document.getElementById('qrModal');
+let qrDone = false;
+function showQR(){
+  if (!qrDone){
+    const url = SHARE_URL || location.href;
+    new QRCode(document.getElementById('qrBox'), {text:url, width:190, height:190,
+      colorDark:"#1c2414", colorLight:"#ffffff", correctLevel:QRCode.CorrectLevel.M});
+    qrDone = true;
+  }
+  qrModal.hidden = false;
+}
+document.getElementById('qrClose').addEventListener('click', () => qrModal.hidden = true);
+qrModal.addEventListener('click', e => { if (e.target === qrModal) qrModal.hidden = true; });
+
+const arBtn = document.getElementById('arBtn');
+if (embedded){
+  // dentro claude.ai l'AR è bloccata dalla sandbox: il bottone diventa un link alla pagina standalone
+  const a = document.createElement('a');
+  a.id = 'arBtn'; a.href = STANDALONE_URL; a.target = '_blank'; a.rel = 'noopener';
+  a.textContent = '📷 Apri la demo AR completa';
+  arBtn.replaceWith(a);
+  document.getElementById('arHint').textContent =
+    "Qui dentro la fotocamera è bloccata: il link apre la pagina standalone, dove l'AR funziona.";
+} else {
+  arBtn.addEventListener('click', async () => {
+    if (xrSupported){
+      try { await startWebXR(); return; }
+      catch(e){
+        showToast("WebXR bloccato qui (" + e.message + "). Prova ad aprire la pagina da Chrome sul telefono.");
+        return;
+      }
+    }
+    if (isIOS){ await startQuickLook(); return; }
+    showQR();
+  });
+}
+
+// stato iniziale: piantina già un po' cresciuta, poi parte l'animazione
+applyGrowth(0.001);
+setTimeout(() => { playing = true; playBtn.textContent = '⏸'; }, 600);
+})();
+</script>
+
+</html>
